@@ -23,9 +23,10 @@ import logging
 import struct
 import time
 
-from pyzwaver import zmessage
 from pyzwaver import zwave as z
 from pyzwaver.driver import Driver
+from pyzwaver.driver import MessageQueueOut
+from pyzwaver.transaction import Transaction
 
 _APPLICATION_NODEINFO_LISTENING = 1
 _NUM_NODE_BITFIELD_BYTES = 29
@@ -230,7 +231,7 @@ class Controller:
 
     @classmethod
     def Priority(cls):
-        return zmessage.ControllerPriority()
+        return MessageQueueOut.CONTROLLER_PRIORITY
 
     def StringBasic(self):
         return "\n".join([
@@ -253,24 +254,27 @@ class Controller:
         return "\n".join(out)
 
     def UpdateVersion(self):
-        def handler(data):
-            if not data:
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT:
                 # logging.error("Cannot read controller version. Check serial device.")
                 raise ValueError("Cannot read controller version. Check serial device.")
             else:
-                self.props.SetVersion(*struct.unpack(">12sB", data[4:-1]))
+                logging.debug("Handling version response: %s", data)
+                self.props.SetVersion(*struct.unpack(">12sB", bytes(data)))
 
         self.SendCommand(z.API_ZW_GET_VERSION, [], handler)
 
     def UpdateId(self):
-        def handler(data):
-            self.props.SetId(*struct.unpack(">IB", data[4:-1]))
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            self.props.SetId(*struct.unpack(">IB",bytes(data)))
 
         self.SendCommand(z.API_ZW_MEMORY_GET_ID, [], handler)
 
     def UpdateControllerCapabilities(self):
-        def handler(data):
-            self.props.SetControllerCapabilites(data[4])
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            self.props.SetControllerCapabilites(data[0])
 
         self.SendCommand(z.API_ZW_GET_CONTROLLER_CAPABILITIES, [], handler)
 
@@ -278,47 +282,53 @@ class Controller:
         """
         """
 
-        def handler(data):
-            self.props.SetSerialCapabilities(*struct.unpack(">HHHH32s", data[4:-1]))
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            self.props.SetSerialCapabilities(*struct.unpack(">HHHH32s", bytes(data)))
 
         self.SendCommand(z.API_SERIAL_API_GET_CAPABILITIES, [], handler)
 
     def UpdateSerialApiGetInitData(self):
         """This get all the node numbers"""
 
-        def handler(data):
-            bits = self.props.SetInitAndReturnBits(*struct.unpack(">BBB29sBB", data[4:-1]))
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            bits = self.props.SetInitAndReturnBits(*struct.unpack(">BBB29sBB", bytes(data)))
             self.nodes = ExtractNodes(bits)
 
         self.SendCommand(z.API_SERIAL_API_GET_INIT_DATA, [], handler)
 
     def SetTimeouts(self, ack_timeout_msec, byte_timeout_msec):
-        def handler(data):
-            logging.info("previous timeouts: %d %d", data[4] * 10, data[5] * 10)
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            logging.info("previous timeouts: %d %d", data[0] * 10, data[1] * 10)
 
         self.SendCommand(z.API_SERIAL_API_SET_TIMEOUTS,
                          [ack_timeout_msec // 10, byte_timeout_msec // 10],
                          handler)
 
     def UpdateSucNodeId(self):
-        def handler(data):
-            succ_node = data[4]
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            succ_node = data[0]
             logging.info("suc node id: %s", succ_node)
 
         self.SendCommand(z.API_ZW_GET_SUC_NODE_ID, [], handler)
 
     def GetRandom(self, _, cb):
-        def handler(data):
-            success = data[4]
-            size = data[5]
-            data = data[6:6 + size]
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            success = data[0]
+            size = data[1]
+            data = data[2:2 + size]
             cb(success, data)
 
         self.SendCommand(z.API_ZW_GET_RANDOM, [], handler)
 
     def UpdateFailedNode(self, node: int):
-        def handler(data):
-            if data[4]:
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            if data[0]:
                 self.failed_nodes.add(node)
             else:
                 self.failed_nodes.discard(node)
@@ -326,8 +336,8 @@ class Controller:
         self.SendCommand(z.API_ZW_IS_FAILED_NODE_ID, [node], handler)
 
     def ReadMemory(self, offset: int, length: int, cb):
-        def handler(data, _):
-            data = data[4: -1]
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             logging.info("received %x bytes", len(data))
             cb(data)
 
@@ -336,15 +346,16 @@ class Controller:
                          handler)
 
     def GetRoutingInfo(self, node: int, rem_bad, rem_non_repeaters, cb):
-        def handler(data):
-            cb(node, ExtractNodes(data[4:-1]))
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            cb(node, ExtractNodes(data))
 
         self.SendCommand(z.API_ZW_GET_ROUTING_INFO,
                          [node, rem_bad, rem_non_repeaters, 3],
                          handler)
 
     def SetPromiscuousMode(self, state):
-        def handler(_):
+        def handler(callbackReason, data):
             pass
 
         self.SendCommand(z.API_ZW_SET_PROMISCUOUS_MODE, [state], handler)
@@ -354,23 +365,23 @@ class Controller:
         """
         logging.warning("requesting node info for %d", node)
 
-        def handler(data):
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             if cb:
-                cb(data[4])
+                cb(data[0])
 
         self.SendCommand(z.API_ZW_REQUEST_NODE_INFO, [node], handler)
 
-    def RemoveFailedNode(self, node: int, cb):
-        def handler(m):
-            if not m:
+    def RemoveFailedNode(self, node: int, cb):  # FIXME: figure out flow and if it still works correctly, currently not used
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT:
                 cb(MESSAGE_TIMEOUT)
-            elif m[2] == z.RESPONSE:
+            elif callbackReason == Transaction.CallbackReason.RESPONSE_RECEIVED:
                 cb(MESSAGE_NOT_DELIVERED)
             else:
-                return cb(m[5])
+                return cb(data[1])
 
-        self.SendCommandWithId(
-            z.API_ZW_REMOVE_FAILED_NODE_ID, [node], handler)
+        self.SendCommand(z.API_ZW_REMOVE_FAILED_NODE_ID, [node], handler)
 
     # ============================================================
     # Routing
@@ -389,17 +400,17 @@ class Controller:
     def MakeFancyReceiver(self, activity: str, receiver_type, event_cb):
         stringMap, actions = receiver_type
 
-        def Handler(m):
-            if m is None:
+        def Handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT:
                 logging.error("[%s] Aborted", activity)
                 event_cb(activity, EVENT_PAIRING_ABORTED, None)
                 return True
-            if not m:
+            if not data:
                 event_cb(activity, EVENT_PAIRING_STARTED, None)
                 return True
 
-            status = m[5]
-            node = m[6]
+            status = data[1]
+            node = data[2]
             name = stringMap[status]
             a = actions[status]
             logging.warning("pairing status update: %s", a)
@@ -417,7 +428,7 @@ class Controller:
                 event_cb(activity, EVENT_PAIRING_SUCCESS, node)
                 # This not make much sense for node removals but does not hurt either
                 self.RequestNodeInfo(node)
-                self.Update(None)
+                self.Update()
                 return True
             elif a == PAIRING_ACTION_FAILED:
                 logging.warning("[%s] Failure - %s [%d]", activity, name, node)
@@ -432,16 +443,16 @@ class Controller:
     def NeighborUpdate(self, node: int, event_cb):
         activity = "NeighborUpdate",
 
-        def Handler(m):
-            if m is None:
+        def Handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT:
                 logging.error("[%s] Aborted", activity)
                 event_cb(activity, EVENT_PAIRING_ABORTED, node)
                 return True
-            if not m:
+            if not data:
                 event_cb(activity, EVENT_PAIRING_STARTED, node)
                 return False
 
-            status = m[5]
+            status = data[1]
             if status == z.REQUEST_NEIGHBOR_UPDATE_STARTED:
                 event_cb(activity, EVENT_PAIRING_CONTINUE, node)
                 return False
@@ -452,65 +463,63 @@ class Controller:
                 event_cb(activity, EVENT_PAIRING_FAILED, node)
                 return True
             else:
-                logging.error("[%s] unknown status %d %s", activity, status, zmessage.Hexify(m))
+                logging.error("[%s] unknown status %d %s", activity, status, " ".join(["%02x" % i for i in data]))
                 return True
 
         logging.warning("NeighborUpdate(%d)", node)
-        return self.SendCommandWithId(z.API_ZW_REQUEST_NODE_NEIGHBOR_UPDATE, [node], Handler,
+        return self.SendCommand(z.API_ZW_REQUEST_NODE_NEIGHBOR_UPDATE, [node], Handler,
                                       timeout=self._pairing_timeout_sec)
 
     def AddNodeToNetwork(self, event_cb):
         logging.warning("AddNodeToNetwork")
         mode = [z.ADD_NODE_ANY]
         cb = self.MakeFancyReceiver(ACTIVITY_ADD_NODE, HANDLER_TYPE_ADD_NODE, event_cb)
-        return self.SendCommandWithId(z.API_ZW_ADD_NODE_TO_NETWORK, mode, cb,
-                                      timeout=self._pairing_timeout_sec)
+        return self.SendCommand(z.API_ZW_ADD_NODE_TO_NETWORK, mode, cb, timeout=self._pairing_timeout_sec)
 
     def StopAddNodeToNetwork(self, event_cb):
         logging.warning("StopAddNodeToNetwork")
         mode = [z.ADD_NODE_STOP]
         cb = self.MakeFancyReceiver(ACTIVITY_STOP_ADD_NODE, HANDLER_TYPE_STOP, event_cb)
-        return self.SendCommandWithId(z.API_ZW_ADD_NODE_TO_NETWORK, mode, cb,
-                                      timeout=5)
+        return self.SendCommand(z.API_ZW_ADD_NODE_TO_NETWORK, mode, cb, timeout=5)
 
     def RemoveNodeFromNetwork(self, event_cb):
         logging.warning("RemoveNodeFromNetwork")
         mode = [z.REMOVE_NODE_ANY]
         cb = self.MakeFancyReceiver(ACTIVITY_REMOVE_NODE, HANDLER_TYPE_REMOVE_NODE, event_cb)
-        return self.SendCommandWithId(z.API_ZW_REMOVE_NODE_FROM_NETWORK, mode, cb,
-                                      timeout=self._pairing_timeout_sec)
+        return self.SendCommand(z.API_ZW_REMOVE_NODE_FROM_NETWORK, mode, cb, timeout=self._pairing_timeout_sec)
 
     def StopRemoveNodeFromNetwork(self, _):
         mode = [z.REMOVE_NODE_STOP]
         # NOTE: this will sometimes result in a "stray request" being sent back:
         #  SOF len:07 REQU API_ZW_REMOVE_NODE_FROM_NETWORK:4b cb:64 status:06 00 00 chk:d1
         # We just drop this message on the floor
-        return self.SendCommandWithIdNoResponse(z.API_ZW_REMOVE_NODE_FROM_NETWORK, mode)
+        return self.SendCommand(z.API_ZW_REMOVE_NODE_FROM_NETWORK, mode)
 
     def SetLearnMode(self, event_cb):
         mode = [z.LEARN_MODE_NWI]
         cb = self.MakeFancyReceiver(ACTIVITY_SET_LEARN_MODE, HANDLER_TYPE_SET_LEARN_MODE, event_cb)
-        return self.SendCommandWithId(z.API_ZW_SET_LEARN_MODE, mode, cb, timeout=self._pairing_timeout_sec)
+        return self.SendCommand(z.API_ZW_SET_LEARN_MODE, mode, cb, timeout=self._pairing_timeout_sec)
 
     def StopSetLearnMode(self, _):
         mode = [z.LEARN_MODE_DISABLE]
-        return self.SendCommandWithIdNoResponse(z.API_ZW_SET_LEARN_MODE, mode)
+        return self.SendCommand(z.API_ZW_SET_LEARN_MODE, mode)
 
     def ChangeController(self, event_cb):
         mode = [z.CONTROLLER_CHANGE_START]
         cb = self.MakeFancyReceiver(ACTIVITY_CHANGE_CONTROLLER, HANDLER_TYPE_ADD_NODE, event_cb)
-        return self.SendCommandWithId(z.API_ZW_CONTROLLER_CHANGE, mode, cb, timeout=self._pairing_timeout_sec)
+        return self.SendCommand(z.API_ZW_CONTROLLER_CHANGE, mode, cb, timeout=self._pairing_timeout_sec)
 
     def StopChangeController(self, _):
         mode = [z.CONTROLLER_CHANGE_STOP]
-        return self.SendCommandWithIdNoResponse(z.API_ZW_CONTROLLER_CHANGE, mode)
+        return self.SendCommand(z.API_ZW_CONTROLLER_CHANGE, mode)
 
     # ============================================================
     # ============================================================
     def ApplNodeInformation(self):
         """Advertise/change the features of this node"""
 
-        def handler(_):
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             logging.warning("controller is now initialized")
             self._state = CONTROLLER_STATE_INITIALIZED
 
@@ -523,53 +532,30 @@ class Controller:
                          handler)
 
     def SendNodeInformation(self, dst_node: int, xmit: int, cb):
-        def handler(message):
-            cb(message[4:-1])
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            cb(data)
 
-        self.SendCommandWithId(z.API_ZW_SEND_NODE_INFORMATION,
-                               [dst_node, xmit],
-                               handler)
+        self.SendCommand(z.API_ZW_SEND_NODE_INFORMATION, [dst_node, xmit], handler)
 
     def SetDefault(self):
         """Factory reset the controller"""
 
-        def handler(message):
-            if message:
-                message = message[4:-1]
-            logging.warning("set default response %s", message)
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            logging.warning("set default response %s", data)
 
-        self.SendCommandWithId(z.API_ZW_SET_DEFAULT, [], handler)
+        self.SendCommand(z.API_ZW_SET_DEFAULT, [], handler)
 
     def SoftReset(self):
-        def handler(message):
-            if message:
-                message = message[4:-1]
-            logging.warning("soft reset response %s", message)
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            logging.warning("soft reset response %s", data)
 
-        self.SendCommandWithId(z.API_SERIAL_API_SOFT_RESET, [], handler)
+        self.SendCommand(z.API_SERIAL_API_SOFT_RESET, [], handler, timeout=2.0)
 
-    def SendCommand(self, func, data, handler):
-        raw = zmessage.MakeRawMessage(func, data)
-        mesg = zmessage.Message(raw, self.Priority(), handler, -1)
-        self._mq.SendMessage(mesg)
-
-    def SendCommandWithId(self, func, data, handler, timeout=2.0):
-        raw = zmessage.MakeRawMessageWithId(func, data)
-        mesg = zmessage.Message(raw, self.Priority(), handler, -1, timeout=timeout)
-        self._mq.SendMessage(mesg)
-
-    def SendCommandWithIdNoResponse(self, func, data, timeout=2.0):
-        raw = zmessage.MakeRawMessageWithId(func, data)
-        mesg = zmessage.Message(raw, self.Priority(), None, -1, timeout=timeout,
-                                action_requ=[zmessage.ACTION_NONE],
-                                action_resp=[zmessage.ACTION_NONE])
-        self._mq.SendMessage(mesg)
-
-    def SendBarrierCommand(self, handler):
-        """Dummy Command to invoke the handler when all previous commands are done"""
-        logging.warning("SendBarrierCommand")
-        mesg = zmessage.Message(None, self.Priority(), handler, None)
-        self._mq.SendMessage(mesg)
+    def SendCommand(self, command, commandParameters=None, handler=None, timeout=0.0):
+        self._mq.sendRequest(command, commandParameters, self.Priority(), timeout, handler)
 
     def Initialize(self):
         self.UpdateVersion()
@@ -602,7 +588,7 @@ class Controller:
     def GetNodeId(self):
         return self.props.node_id
 
-    def Update(self, cb):
+    def Update(self):
         logging.warning("Update")
         # self._event_cb(ACTIVITY_CONTROLLER_UPDATE, EVENT_UPDATE_STARTED)
         self.UpdateId()
@@ -611,4 +597,3 @@ class Controller:
         self.UpdateSerialApiGetInitData()
         for n in self.nodes:
             self.UpdateFailedNode(n)
-        self.SendBarrierCommand(cb)

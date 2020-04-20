@@ -57,11 +57,9 @@ def Hexify(t):
 
 def StringifyCommand(key):
     s = _CUSTOM_COMMAND_STRINGS.get(key)
-    if s:
-        return s
+    if s: return s
     s = z.SUBCMD_TO_STRING.get(key[0] * 256 + key[1])
-    if s:
-        return s
+    if s: return s
     return "Unknown:%02x:%02x" % (key[0], key[1])
 
 
@@ -73,8 +71,7 @@ def NodeDescription(basic_generic_specific):
     k = basic_generic_specific[1] * 256 + basic_generic_specific[2]
     v = z.GENERIC_SPECIFIC_DB.get(k)
     if v is None:
-        logging.error("unknown generic device : %s",
-                      str(basic_generic_specific))
+        logging.error("unknown generic device : %s", str(basic_generic_specific))
         return "unknown device_description: %s" % str(basic_generic_specific)
     return v[0]
 
@@ -421,8 +418,7 @@ def _MakeSizedLittleEndianInt(v):
 
 
 def _MakeOptionalTarget(v):
-    if v is None:
-        return []
+    if v is None: return []
     out = [len(v)]
     for w in v:
         out.append((w >> 8) & 255)
@@ -479,94 +475,63 @@ _PARSE_ACTIONS = {
 }
 
 
-def _GetParameterDescriptors(m):
-    if len(m) < 2:
-        logging.error("malformed command %s", m)
-        return None
-    key = m[0] * 256 + m[1]
-    return z.SUBCMD_TO_PARSE_TABLE[key]
+def ParseCommand(nodeCommand, nodeCommandParameters):
+    table = z.SUBCMD_TO_PARSE_TABLE.get((nodeCommand[0] << 8) + nodeCommand[1])
+    if table is None: return None
 
-
-def ParseCommand(m):
-    """ParseCommand decodes an API_APPLICATION_COMMAND request into a map of values"""
-    table = _GetParameterDescriptors(m)
-
-    if table is None:
-        raise ValueError("unknown command")
-
-    out = {}
-    index = 2
+    nodeParameterValues = {}
+    index = 0
     for t in table:
         kind = t[0]
         name = t[2:-1]
-        new_index, value = _PARSE_ACTIONS[kind][0](m, index)
-        if value is None:
-            if kind not in _OPTIONAL_COMPONENTS:
-                raise ValueError("missing value for %s" % name)
-        else:
-            out[name] = value
+        try: new_index, value = _PARSE_ACTIONS[kind][0](nodeCommandParameters, index)
+        except: return None
+        if value is None and kind not in _OPTIONAL_COMPONENTS: return None
 
+        nodeParameterValues[name] = value
         index = new_index
-    return out
+
+    return nodeParameterValues
 
 
-def AssembleCommand(key: tuple, args: dict):
-    """
-    Convert command from dictionary representation to wire representation
-    """
-    table = z.SUBCMD_TO_PARSE_TABLE[key[0] * 256 + key[1]]
-    assert table is not None
-    data = [
-        key[0],
-        key[1]
-    ]
-    # logging.debug("${raw_cmd[0]} ${raw_cmd[1]}: table length:
-    # ${table.length}")
+def AssembleCommand(nodeCommand: tuple, nodeCommandValues: dict):
+    table = z.SUBCMD_TO_PARSE_TABLE[nodeCommand[0] * 256 + nodeCommand[1]]
+    if table is None: return None
+
+    data = [nodeCommand[0], nodeCommand[1]]
     for t in table:
         kind = t[0]
         name = t[2:-1]
-        v = args.get(name)
-        if v is None and kind not in _OPTIONAL_COMPONENTS:
-            raise ValueError("missing args for [%s]" % name)
+        v = nodeCommandValues.get(name)
+        if v is None and kind not in _OPTIONAL_COMPONENTS: return None
 
         data += _PARSE_ACTIONS[kind][1](v)
     return data
 
 
+# not used at the moment
 def MaybePatchCommand(m):
-    # if m[0] == z.MultiInstance and m[1] == z.MultiInstance_Encap:
-    #    logging.warning("received MultiInstance_Encap for instance")
-    #    return m[4:]
-
-    if ((m[0], m[1]) == z.SensorMultilevel_Report and
-            m[2] == 1 and
-            ((m[3] & 7) > len(m) - 4)):
+    if ((m[0], m[1]) == z.SensorMultilevel_Report and m[2] == 1 and ((m[3] & 7) > len(m) - 4)):
         x = 1 << 5 | (0 << 3) | 2
         # [49, 5, 1, 127, 1, 10] => [49, 5, 1, X, 1, 10]
-        logging.error(
-            "A fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", Hexify(m), m[3], x)
+        logging.error("A fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", Hexify(m), m[3], x)
         m[3] = x
 
-    if ((m[0], m[1]) == z.SensorMultilevel_Report and
-            m[2] == 1 and
-            (m[3] & 0x10) != 0):
+    if ((m[0], m[1]) == z.SensorMultilevel_Report and m[2] == 1 and (m[3] & 0x10) != 0):
         x = m[3] & 0xe7
-        logging.error(
-            "B fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", Hexify(m), m[3], x)
+        logging.error("B fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", Hexify(m), m[3], x)
         m[3] = x
 
     if (m[0], m[1]) == z.Version_CommandClassReport and len(m) == 3:
         m.append(1)
+
     # if (m[0], m[1]) == z.SensorMultilevel_Report and (m[3] & 7) not in (1, 2, 4):
     #     size = m[3] & 7
-    #     if size == 3:
-    #         size = 2
-    #     elif size == 7:
-    #         size = 1
-    #     elif size == 6:
-    #         size = 2
+    #     if size == 3: size = 2
+    #     elif size == 7: size = 1
+    #     elif size == 6: size = 2
     #     x = m[3] & 0xf8 | size
-    #     logging.error(
-    #         "C fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", Hexify(m), m[3], x)
+    #     logging.error("C fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", Hexify(m), m[3], x)
     #     m[3] = x
+
     return m

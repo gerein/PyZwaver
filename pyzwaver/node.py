@@ -28,7 +28,7 @@ from pyzwaver import command
 from pyzwaver.command_translator import CommandTranslator
 from pyzwaver.value import GetSensorMeta, GetMeterMeta, SENSOR_KIND_BATTERY, SENSOR_KIND_SWITCH_MULTILEVEL, \
     SENSOR_KIND_SWITCH_BINARY, TEMPERATURE_MODES
-from pyzwaver.zmessage import NodePriorityHi, NodePriorityLo
+from pyzwaver.driver import MessageQueueOut
 
 SECURE_MODE = False
 
@@ -430,7 +430,7 @@ class Node:
     def __str__(self):
         return self.BasicString() + "\n" + str(self.values)
 
-    def BatchCommandSubmitFiltered(self, commands: List[tuple], priority: tuple, xmit: int):
+    def BatchCommandSubmitFiltered(self, commands: List[tuple], priority: tuple):
         for c in commands:
             if len(c) != 2:
                 logging.error("BAD COMMAND: %s", c)
@@ -444,13 +444,13 @@ class Node:
             #    self._secure_messaging.Send(cmd)
             #    continue
 
-            self._translator.SendCommand(self.n, key, values, priority, xmit)
+            self._translator.SendCommand(self.n, key, values, priority)
 
-    def BatchCommandSubmitFilteredSlow(self, commands: List[tuple], xmit: int = XMIT_OPTIONS):
-        self.BatchCommandSubmitFiltered(commands, NodePriorityLo(self.n), xmit)
+    def BatchCommandSubmitFilteredSlow(self, commands: List[tuple]):
+        self.BatchCommandSubmitFiltered(commands, MessageQueueOut.NodePriorityLo(self.n))
 
-    def BatchCommandSubmitFilteredFast(self, commands: List[tuple], xmit: int = XMIT_OPTIONS):
-        self.BatchCommandSubmitFiltered(commands, NodePriorityHi(self.n), xmit)
+    def BatchCommandSubmitFilteredFast(self, commands: List[tuple]):
+        self.BatchCommandSubmitFiltered(commands, MessageQueueOut.NodePriorityHi(self.n))
 
     # def _IsSecureCommand(self, key0, key1):
     #    if key0 == z.Security:
@@ -586,7 +586,7 @@ class Node:
             return
 
         if self.state < NODE_STATE_DISCOVERED and not command.IsCustom(key):
-            self._translator.Ping(self.n, 3, False, "undiscovered")
+            self._translator.Ping(self.n, 3, "undiscovered")
 
         items_extractor = _COMMANDS_WITH_MAP_VALUES.get(key)
         if items_extractor:
