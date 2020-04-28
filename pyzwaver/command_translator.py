@@ -23,9 +23,8 @@ import logging
 import struct
 import time
 
-from pyzwaver import command
+from pyzwaver import command as c
 from pyzwaver import zwave as z
-# from pyzwaver import zsecurity
 from pyzwaver.driver import Driver
 from pyzwaver.driver import MessageQueueOut
 from pyzwaver.transaction import Transaction
@@ -127,7 +126,7 @@ class CommandTranslator(object):
                 "flags": flags,
                 "device_type": (basic, generic, specific),
             }
-            self._PushToListeners(n, time.time(), command.CUSTOM_COMMAND_PROTOCOL_INFO, out)
+            self._PushToListeners(n, time.time(), c.CUSTOM_COMMAND_PROTOCOL_INFO, out)
 
 
         logging.info("===: GetNodeProtocolInfo (node: %s)", _NodeName(n))
@@ -148,22 +147,23 @@ class CommandTranslator(object):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             failed = data[0] != 0
             logging.info("===: Pong (node: %s) is-failed: %s, %s", _NodeName(n), failed, data)
-            self._PushToListeners(n, time.time(), command.CUSTOM_COMMAND_FAILED_NODE, {"failed": failed})
+            self._PushToListeners(n, time.time(), c.CUSTOM_COMMAND_FAILED_NODE, {"failed": failed})
             if not failed: self._RequestNodeInfo(n, retries)
 
         self._driver.sendRequest(z.API_ZW_IS_FAILED_NODE_ID, [n], MessageQueueOut.CONTROLLER_PRIORITY, callback=handler)
 
 
     def _HandleMessageApplicationCommand(self, node, nodeCommand:NodeCommand):
-        nodeCommandValues = nodeCommand.commandValues
-        if nodeCommand == z.MultiChannel_CapabilityReport:
-            node = (node << 8) + nodeCommandValues["endpoint"]
-            nodeCommandValues["commands"] = nodeCommandValues["classes"]
-            nodeCommandValues["controls"] = []
-            self._PushToListeners(node, time.time(), command.CUSTOM_COMMAND_APPLICATION_UPDATE, nodeCommandValues) # FIXME: do we need to reintroduce timestamp
+        command = nodeCommand.command
+        commandValues = nodeCommand.commandValues
+        if command == z.MultiChannel_CapabilityReport:
+            node = (node << 8) + commandValues["endpoint"]
+            commandValues["commands"] = commandValues["classes"]
+            commandValues["controls"] = []
+            self._PushToListeners(node, time.time(), c.CUSTOM_COMMAND_APPLICATION_UPDATE, commandValues) # FIXME: do we need to reintroduce timestamp
             return
 
-        self._PushToListeners(node, time.time(), nodeCommand, nodeCommandValues)
+        self._PushToListeners(node, time.time(), command, commandValues)
 
 
     def _HandleMessageApplicationUpdate(self, commandParameters):
@@ -191,7 +191,7 @@ class CommandTranslator(object):
                 "commands": commands,
                 "controls": controls,
             }
-            self._PushToListeners(n, time.time(), command.CUSTOM_COMMAND_APPLICATION_UPDATE, value)  #FIXME: do we need to reintroduce timestamp
+            self._PushToListeners(n, time.time(), c.CUSTOM_COMMAND_APPLICATION_UPDATE, value)  #FIXME: do we need to reintroduce timestamp
 
         elif commandParameters[0] == z.UPDATE_STATE_SUC_ID:
             logging.warning("===: Application updated: succ id updated: needs work")
