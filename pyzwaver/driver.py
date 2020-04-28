@@ -1,5 +1,5 @@
-#!/usr/bin/python3
 # Copyright 2016 Robert Muth <robert@muth.org>
+# Copyright 2020 Gerein
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -98,7 +98,7 @@ class MessageQueueOut:
         level = priority[0]
         if level == 2:
             self._hi_min = priority[1]
-        elif level == 2:
+        elif level == 2: # FIXME: makes no sense
             self._lo_min = priority[1]
         self._per_node_size[priority[2]] -= 1
         return message
@@ -107,14 +107,12 @@ class MessageQueueOut:
 class Driver(object):
     """
     Driver is responsible for sending and receiving raw
-    Z-Wave message (arrays of bytes) to/from a serial
-    Z-Wave stick. Some of the messages will not go out to
-    any Z-Wave node but will just be local communication
-    with the stick.
+    Z-Wave message to/from a serial Z-Wave device. This includes
+    messages for nodes and local communication with the Z-Wave
+    device.
 
-    Outgoing message can be sent via the SendMessage API
-    which will queue them if necessary.
-    Incoming messages can be observed by registering a listener.
+    The Driver object encapsulates all transmission related
+    logic, i.e., confirmation, timeouts, queueing, etc
     """
 
     TERMINATE = 0xFFFF
@@ -170,7 +168,9 @@ class Driver(object):
         dataFrame = CallbackRequest(command, commandParameters) if Transaction.hasRequests(command) else DataFrame(command, commandParameters)
         self.outQueue.put(priority, (dataFrame, timeout, callback))
 
-    def Terminate(self):
+    # Shut down all threads and hence Driver object
+    def terminate(self):
+        # DeviceProcessingThread is non-blocking and will shut down with this flag
         self._terminate = True
 
         # send listeners signal to shutdown
@@ -189,6 +189,9 @@ class Driver(object):
 
 
     def confirmationTimeout(self, timeout=True):
+    # This will handle retransmission of requests if we do not receive an ACK,
+    # mostly due to timeouts (called by the Timer object attached to ongoingTransaction),
+    # but also when we receive a NAK/CAN
         with self.transactionLock:
             if not self.ongoingTransaction: return
             if self.ongoingTransaction.status != Transaction.TransactionStatus.WAIT_FOR_CONFIRMATION: return
@@ -215,6 +218,9 @@ class Driver(object):
             self.confirmationTimeoutThread.start()
             self.ongoingTransaction.retransmissions += 1
 
+    # This will cancel a transaction if it times out (called by Timer object attached to
+    # each transaction). Any responses/requests related to this transcation received after
+    # cancellation are ignored
 
     def transactionTimeout(self, transaction):
         if transaction.ended(): return
@@ -231,7 +237,8 @@ class Driver(object):
                 self.ongoingTransaction = None
                 self.transactionClearedEvent.set()
 
-
+    # This Thread manages a queue of new Transactions to be send. It is triggered by the
+    # transactionClearedEvent (previous live Transaction finished) and transmits the next one
     def NewRequestProcessingThread(self):
         while not self._terminate:
             dataFrame, timeout, callback = self.outQueue.get()
@@ -255,23 +262,24 @@ class Driver(object):
 
         logging.info("NewRequestProcessingThread terminated")
 
-
+    # This Thread processes all incoming communication from the ZWave device. It manages all
+    # transmission logic (timeouts, sending confirmations, retransmissions) and hands over
+    # received messages to the appropriate handler (ongoing Transaction, command_translator, etc)
     def DeviceProcessingThread(self):
         while not self._terminate:
             b = self._device.read()
             if not b: continue
             r = ord(b)  # we store everything as int
 
-            # we're looking for the start of a valid frame (ACK/NAK/CAN/SOF)
-            if r not in z.FIRST_TO_STRING: continue
+            if r not in z.FIRST_TO_STRING: continue   # we're looking for the start of a valid frame (ACK/NAK/CAN/SOF)
 
-            if r == z.SOF:
-                # we are receiving a data frame - let's read it
+            if r == z.SOF:   # we are receiving a data frame - let's read it
+                # we are expecting [ SOF, length, data, checksum]
 
                 length = checksum = -1
                 data = []
 
-                timestamp = time.time()
+                timestamp = time.time()   # we have 1.5 seconds to read the data frame
                 while time.time() - timestamp < 1.5 and checksum == -1 and not self._terminate:
                     b = self._device.read()
                     if not b: continue
@@ -292,8 +300,7 @@ class Driver(object):
 
                 logging.debug("<<<: [ %s ]: %s", " ".join(["%02x" % i for i in frameData]), dataFrame.__class__ if dataFrame else "invalid")
 
-                if not dataFrame:
-                    # invalid format --> NAK
+                if not dataFrame:   # nope! This frame is invalid --> let's send a NAK
                     logging.error("X<<: Received invalid frame [ %s ]", " ".join(["%02x" % i for i in frameData]))
                     self.writeToDevice(ConfirmationFrame(ConfirmationFrame.FrameType.NAK))
                     continue
@@ -305,6 +312,7 @@ class Driver(object):
                 with self.transactionLock:
                     if dataFrame.frameType == DataFrame.FrameType.RESPONSE:
                         if not self.ongoingTransaction or not self.ongoingTransaction.processResponse(dataFrame):
+                            # we did not expect a response here
                             logging.warning("X<<: Received non-matching response - ignore")
                             continue
 
@@ -314,10 +322,13 @@ class Driver(object):
                             self.ongoingTransaction = None
                             self.transactionClearedEvent.set()
                         elif self.ongoingTransaction.status == Transaction.TransactionStatus.WAIT_FOR_REQUEST:
-                            #self.openTransactions.append(self.ongoingTransaction)
-                            #self.ongoingTransaction = None
-                            #self.transactionClearedEvent.set()
-                            pass #FIXME
+                            # we're still expecting follow-on requests and could move this transaction to the
+                            # back-book to be able to send a new one already
+                            # FIXME: de-activated for now, seems to annoy the ZWave device
+                            # self.openTransactions.append(self.ongoingTransaction)
+                            # self.ongoingTransaction = None
+                            # self.transactionClearedEvent.set()
+                            pass
 
                         continue
 
@@ -325,12 +336,15 @@ class Driver(object):
 
                         # distribute unsolicited requests
                         if dataFrame.serialCommand == z.API_ZW_APPLICATION_UPDATE:
+                            # application updates are handed to the listeners (asynchronously)
                             logging.info("===: Received application update: %s", dataFrame.toString())
                             self.inQueue.put((dataFrame.serialCommand, dataFrame.serialCommandParameters))
                             continue
 
                         if dataFrame.serialCommand == z.API_APPLICATION_COMMAND_HANDLER:
                             if not isinstance(dataFrame, NodeCommandFrame):
+                            # application commands are handed to the listeners (asynchronously)
+                                # we couldn't parse this one --> ignore
                                 logging.error("==X: Received malformed device-request: %s", dataFrame.toString())
                                 continue
                             logging.info("===: Received device-request: %s", dataFrame.toString())
@@ -338,23 +352,25 @@ class Driver(object):
                             self.inQueue.put((dataFrame.serialCommand, commandParameters))
                             continue
 
+                        # this request should relate to the ongoing or an open back-book transaction, let's find the right one
                         matchingTransaction = None
                         if self.ongoingTransaction and self.ongoingTransaction.processRequest(dataFrame):
                             matchingTransaction = self.ongoingTransaction
 
-                        if not matchingTransaction:
+                        if not matchingTransaction:  # it's not the ongoing one, let's check other open ones
                             for transaction in self.openTransactions:
                                 if transaction.processRequest(dataFrame):
                                     matchingTransaction = transaction
                                     break
 
-                        if not matchingTransaction:
+                        if not matchingTransaction:  # nope, don't know what this is
                             logging.warning("X<<: Received non-matching request - ignore: %s", dataFrame.toString())
                             continue
 
                         if matchingTransaction.ended():
                             matchingTransaction.transactionTimeoutThread.cancel()
                             logging.info("<==: Transaction completed %s", matchingTransaction.request.toString())
+                            # this request has concluded a transaction
 
                             if self.ongoingTransaction == matchingTransaction:
                                 self.ongoingTransaction = None
@@ -373,6 +389,7 @@ class Driver(object):
 
                 with self.transactionLock:
                     if not self.ongoingTransaction or not self.ongoingTransaction.status == Transaction.TransactionStatus.WAIT_FOR_CONFIRMATION:
+                        # we didn't actually expect a confirmation frame - ignore
                         logging.warning("X<<: Received %s without requiring message confirmation - ignore", serialFrame.toString())
                         continue
 
@@ -390,10 +407,11 @@ class Driver(object):
 
                         elif self.ongoingTransaction.status == Transaction.TransactionStatus.WAIT_FOR_REQUEST:
                             # no response but maybe add'l requests expected --> move transaction to back-book
-                            #self.openTransactions.append(self.ongoingTransaction)
-                            #self.ongoingTransaction = None
-                            #self.transactionClearedEvent.set()
-                            pass #FIXME
+                            # FIXME: de-activated for now, seems to annoy the ZWave device
+                            # self.openTransactions.append(self.ongoingTransaction)
+                            # self.ongoingTransaction = None
+                            # self.transactionClearedEvent.set()
+                            pass
                         continue
 
                     if serialFrame.frameType == serialFrame.FrameType.NAK or \
@@ -405,7 +423,8 @@ class Driver(object):
 
         logging.info("DeviceProcessingThread terminated")
 
-
+    # This Thread distributes incoming commands (APPLICATION_COMMAND_HANDLER, APPLICATION_UPDATE) not
+    # related to a live transaction to registered listeners (command_translator) for asynchronous processing
     def CallbackThread(self):
         while not self._terminate:
             command, commandParameters = self.inQueue.get()
