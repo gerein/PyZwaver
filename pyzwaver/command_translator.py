@@ -29,7 +29,8 @@ from pyzwaver import zwave as z
 from pyzwaver.driver import Driver
 from pyzwaver.driver import MessageQueueOut
 from pyzwaver.transaction import Transaction
-from pyzwaver.serial_frame import NodeCommandFrame
+from pyzwaver.serial_frame import SendDataFrame
+from pyzwaver.command import NodeCommand
 
 
 def Hexify(t): return ["%02x" % i for i in t]
@@ -50,13 +51,13 @@ class CommandTranslator(object):
     The CommandTranslator performs wrapping/unwrapping for MultiChannel commands.
     The CommandTranslator is bi-directional. Commands in dictionary can be sent
     via  SendCommand()/SendMultiCommand() which will convert them to the wire
-    representation before forarding them to the driver.
+    representation before forwarding them to the driver.
     """
 
     def __init__(self, driver: Driver):
         self._driver = driver
         self._listeners = []
-        driver.AddListener(self)
+        driver.addListener(self)
 
     def AddListener(self, l):
         self._listeners.append(l)
@@ -66,7 +67,7 @@ class CommandTranslator(object):
             l.put(n, ts, key, value)
 
 
-    def SendCommand(self, n: int, key: tuple, values: dict, priority:tuple, txOptions:tuple=NodeCommandFrame.standardTX):
+    def SendCommand(self, n: int, key: tuple, values: dict, priority:tuple, txOptions:tuple=SendDataFrame.standardTX):
         self._driver.sendNodeCommand(n, key, values, priority, txOptions) # FIXME: this is int, not Enum
 
 
@@ -145,15 +146,16 @@ class CommandTranslator(object):
 
         def handler(callbackReason, data):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            logging.info("===: Pong (node: %s) is-failed check: %d, %s", _NodeName(n), data[0], data)
             failed = data[0] != 0
+            logging.info("===: Pong (node: %s) is-failed: %s, %s", _NodeName(n), failed, data)
             self._PushToListeners(n, time.time(), command.CUSTOM_COMMAND_FAILED_NODE, {"failed": failed})
             if not failed: self._RequestNodeInfo(n, retries)
 
         self._driver.sendRequest(z.API_ZW_IS_FAILED_NODE_ID, [n], MessageQueueOut.CONTROLLER_PRIORITY, callback=handler)
 
 
-    def _HandleMessageApplicationCommand(self, node, nodeCommand, nodeCommandValues):
+    def _HandleMessageApplicationCommand(self, node, nodeCommand:NodeCommand):
+        nodeCommandValues = nodeCommand.commandValues
         if nodeCommand == z.MultiChannel_CapabilityReport:
             node = (node << 8) + nodeCommandValues["endpoint"]
             nodeCommandValues["commands"] = nodeCommandValues["classes"]
@@ -165,14 +167,12 @@ class CommandTranslator(object):
 
 
     def _HandleMessageApplicationUpdate(self, commandParameters):
-        kind = commandParameters[0]
-
-        if kind == z.UPDATE_STATE_NODE_INFO_REQ_FAILED:
+        if commandParameters[0] == z.UPDATE_STATE_NODE_INFO_REQ_FAILED:
             n = commandParameters[1]
             if n != 0:
                 logging.error("XXX: Application update request failed")
 
-        elif kind == z.UPDATE_STATE_NODE_INFO_RECEIVED:
+        elif commandParameters[0] == z.UPDATE_STATE_NODE_INFO_RECEIVED:
             # the node is awake now and/or has changed values
             n = commandParameters[1]
             length = commandParameters[2]
@@ -193,11 +193,11 @@ class CommandTranslator(object):
             }
             self._PushToListeners(n, time.time(), command.CUSTOM_COMMAND_APPLICATION_UPDATE, value)  #FIXME: do we need to reintroduce timestamp
 
-        elif kind == z.UPDATE_STATE_SUC_ID:
+        elif commandParameters[0] == z.UPDATE_STATE_SUC_ID:
             logging.warning("===: Application updated: succ id updated: needs work")
 
         else:
-            logging.error("XXX: Application update: unknown type (%x) - ignore", kind)
+            logging.error("XXX: Application update: unknown type (%x) - ignore", commandParameters[0])
 
     def put(self, command, commandParameters):
         """ this is how the CommandTranslator receives its input. output is send to its listeners"""

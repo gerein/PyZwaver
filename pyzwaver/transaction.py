@@ -1,4 +1,22 @@
+# Copyright 2020 Gerein
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; version 3
+# of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
 from enum import Enum
+
+import logging
 
 from pyzwaver import zwave as z
 from pyzwaver.serial_frame import DataFrame
@@ -36,7 +54,8 @@ COMMAND_RES_REQ_MULTIREQ = {
     z.API_ZW_SET_SUC_NODE_ID:               (True,  False, False)
 }
 
-
+# This class handles all state transition and callback logic for request/response/request transactions
+# It does not handle any transmission logic (timeouts, confirmations, etc)
 class Transaction:
     TransactionStatus = Enum('TransactionStatus', 'CREATED WAIT_FOR_CONFIRMATION WAIT_FOR_RESPONSE WAIT_FOR_REQUEST COMPLETED TIMED_OUT ABORTED')
     TRANSACTION_ENDED  = [TransactionStatus.COMPLETED, TransactionStatus.TIMED_OUT, TransactionStatus.ABORTED]
@@ -58,6 +77,7 @@ class Transaction:
         self.status = self.TransactionStatus.WAIT_FOR_CONFIRMATION
         self.transactionTimeoutThread = transactionTimeoutThread
         self.transactionTimeoutThread.start()
+        logging.info("==>: Transaction started %s", self.request.toString())
 
     @staticmethod
     def hasRequests(serialCommand):
@@ -75,6 +95,7 @@ class Transaction:
             self.status = self.TransactionStatus.WAIT_FOR_RESPONSE
         else:
             self.status = self.TransactionStatus.COMPLETED
+            logging.info("<==: Transaction completed %s", self.request.toString())
             if self.callback: self.callback(self.CallbackReason.REQUEST_SENT, [])
 
         return True
@@ -86,6 +107,7 @@ class Transaction:
             self.status = self.TransactionStatus.WAIT_FOR_REQUEST
         else:
             self.status = self.TransactionStatus.COMPLETED
+            logging.info("<==: Transaction completed %s", self.request.toString())
 
         if self.callback: self.callback(self.CallbackReason.RESPONSE_RECEIVED, response.serialCommandParameters)   # FIXME: make asynchronous
 
@@ -97,15 +119,18 @@ class Transaction:
 
         if self.request.callbackId != request.callbackId: return False
 
+        more = False
         if self.callback:
             more = self.callback(self.CallbackReason.REQUEST_RECEIVED, request.commandParameters)
-            if not COMMAND_RES_REQ_MULTIREQ[self.request.serialCommand][2] or not more:
-                self.status = self.TransactionStatus.COMPLETED
-        else:
+            more = more and COMMAND_RES_REQ_MULTIREQ[self.request.serialCommand][2]
+
+        if not more:
             self.status = self.TransactionStatus.COMPLETED
+            logging.info("<==: Transaction completed %s", self.request.toString())
 
         return True
 
     def processTimeout(self):
         self.status = Transaction.TransactionStatus.TIMED_OUT
+        logging.error("XXX: Transaction timed out: %s", self.request.toString())
         if self.callback: self.callback(self.CallbackReason.TIMED_OUT, None)

@@ -28,31 +28,21 @@ import logging
 from pyzwaver import zwave as z
 
 # The command below prefixed with CUSTOM_COMMAND_* are made up
-
-# A NIF and MultiChannel_CapabilityReport are transformed into this
-CUSTOM_COMMAND_APPLICATION_UPDATE = (256, 1)
-#  A protocol info message is  transformed into this
-CUSTOM_COMMAND_PROTOCOL_INFO = (256, 2)
-# unused
-CUSTOM_COMMAND_ACTIVE_SCENE = (256, 3)
-# if a node is a failed node as  reported by API_ZW_IS_FAILED_NODE_ID
-# we synthesize this command:
-CUSTOM_COMMAND_FAILED_NODE = (256, 4)
+CUSTOM_COMMAND_APPLICATION_UPDATE = (256, 1)   # NIFs and MultiChannel_CapabilityReports are transformed into this
+CUSTOM_COMMAND_PROTOCOL_INFO      = (256, 2)   # protocol info messages are transformed into this
+CUSTOM_COMMAND_ACTIVE_SCENE       = (256, 3)   # unused
+CUSTOM_COMMAND_FAILED_NODE        = (256, 4)   # if API_ZW_IS_FAILED_NODE_ID reports a failed node
 
 _CUSTOM_COMMAND_STRINGS = {
-    CUSTOM_COMMAND_ACTIVE_SCENE: "_Active_Scene",
+    CUSTOM_COMMAND_ACTIVE_SCENE:       "_Active_Scene",
     CUSTOM_COMMAND_APPLICATION_UPDATE: "_Application_Update",
-    CUSTOM_COMMAND_PROTOCOL_INFO: "_ProtocolInfo",
-    CUSTOM_COMMAND_FAILED_NODE: "_FailedNode",
+    CUSTOM_COMMAND_PROTOCOL_INFO:      "_ProtocolInfo",
+    CUSTOM_COMMAND_FAILED_NODE:        "_FailedNode"
 }
 
 
 def IsCustom(key):
     return key in _CUSTOM_COMMAND_STRINGS
-
-
-def Hexify(t):
-    return ["%02x" % i for i in t]
 
 
 def StringifyCommand(key):
@@ -453,60 +443,26 @@ _OPTIONAL_COMPONENTS = {'b', 't'}
 # Whenever you augment this make sure there is a test case in
 # TestData/commands.input.txt
 _PARSE_ACTIONS = {
-    "A": (_ParseStringWithLength, _MakeStringWithLength),
-    "B": (_ParseByte, _MakeByte),
-    "C": (_ParseDate, _MakeDate),
-    "E": (_ParseExtensions, _MakeExtensions),
+    "A": (_ParseStringWithLength,    _MakeStringWithLength),
+    "B": (_ParseByte,                _MakeByte),
+    "C": (_ParseDate,                _MakeDate),
+    "E": (_ParseExtensions,          _MakeExtensions),
     "F": (_ParseStringWithLengthAndEncoding, _MakeString),
-    "G": (_ParseGroups, _MakeGroups),
-    "L": (_ParseListRest, _MakeList),
-    "M": (_ParseMeter, _MakeMeter),
-    "N": (_ParseName, _MakeName),
-    "O": (_ParseNonce, _MakeNonce),
+    "G": (_ParseGroups,              _MakeGroups),
+    "L": (_ParseListRest,            _MakeList),
+    "M": (_ParseMeter,               _MakeMeter),
+    "N": (_ParseName,                _MakeName),
+    "O": (_ParseNonce,               _MakeNonce),
     "R": (_ParseRestLittleEndianInt, _MakeLittleEndianInt),  # as integer
     # "T": _ParseSizedLittleEndianInt,
-    "V": (_ParseValue, _MakeValue),
-    "W": (_ParseWord, _MakeWord),
-
-    "X": (_ParseSensor, _MakeSensor),
+    "V": (_ParseValue,               _MakeValue),
+    "W": (_ParseWord,                _MakeWord),
+    "X": (_ParseSensor,              _MakeSensor),
     # Maybes
-    'b': (_ParseOptionalByte, _MakeOptionalByte),
-    't': (_ParseOptionalTarget, _MakeOptionalTarget),
+    'b': (_ParseOptionalByte,        _MakeOptionalByte),
+    't': (_ParseOptionalTarget,      _MakeOptionalTarget)
 }
 
-
-def ParseCommand(nodeCommand, nodeCommandParameters):
-    table = z.SUBCMD_TO_PARSE_TABLE.get((nodeCommand[0] << 8) + nodeCommand[1])
-    if table is None: return None
-
-    nodeParameterValues = {}
-    index = 0
-    for t in table:
-        kind = t[0]
-        name = t[2:-1]
-        try: new_index, value = _PARSE_ACTIONS[kind][0](nodeCommandParameters, index)
-        except: return None
-        if value is None and kind not in _OPTIONAL_COMPONENTS: return None
-
-        nodeParameterValues[name] = value
-        index = new_index
-
-    return nodeParameterValues
-
-
-def AssembleCommand(nodeCommand: tuple, nodeCommandValues: dict):
-    table = z.SUBCMD_TO_PARSE_TABLE[nodeCommand[0] * 256 + nodeCommand[1]]
-    if table is None: return None
-
-    data = [nodeCommand[0], nodeCommand[1]]
-    for t in table:
-        kind = t[0]
-        name = t[2:-1]
-        v = nodeCommandValues.get(name)
-        if v is None and kind not in _OPTIONAL_COMPONENTS: return None
-
-        data += _PARSE_ACTIONS[kind][1](v)
-    return data
 
 
 # not used at the moment
@@ -514,12 +470,12 @@ def MaybePatchCommand(m):
     if ((m[0], m[1]) == z.SensorMultilevel_Report and m[2] == 1 and ((m[3] & 7) > len(m) - 4)):
         x = 1 << 5 | (0 << 3) | 2
         # [49, 5, 1, 127, 1, 10] => [49, 5, 1, X, 1, 10]
-        logging.error("A fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", Hexify(m), m[3], x)
+        logging.error("A fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", ["%02x" % i for i in m], m[3], x)
         m[3] = x
 
     if ((m[0], m[1]) == z.SensorMultilevel_Report and m[2] == 1 and (m[3] & 0x10) != 0):
         x = m[3] & 0xe7
-        logging.error("B fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", Hexify(m), m[3], x)
+        logging.error("B fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", ["%02x" % i for i in m], m[3], x)
         m[3] = x
 
     if (m[0], m[1]) == z.Version_CommandClassReport and len(m) == 3:
@@ -535,3 +491,67 @@ def MaybePatchCommand(m):
     #     m[3] = x
 
     return m
+
+
+class NodeCommand:
+
+    def __init__(self, command:tuple, commandValues:dict=None, endPoint=None):
+        if commandValues is None: commandValues = {}
+        self.command = command
+        self.commandValues = commandValues
+        self.endPoint = endPoint
+
+    def parseData(self, data):
+        if len(data) < 2: return False
+        self.command = (data[0], data[1])
+        nodeCommandParameters = data[2:]
+
+        if self.command == z.MultiChannel_CmdEncap:
+            if len(nodeCommandParameters) < 4: return False
+            self.endPoint = nodeCommandParameters[0]
+            self.command = (nodeCommandParameters[2], nodeCommandParameters[3])
+            nodeCommandParameters = nodeCommandParameters[4:]
+
+        table = z.SUBCMD_TO_PARSE_TABLE.get((self.command[0] << 8) + self.command[1])
+        if table is None: return False
+
+        self.commandValues = {}
+        index = 0
+        for t in table:
+            kind = t[0]
+            name = t[2:-1]
+            try:    new_index, value = _PARSE_ACTIONS[kind][0](nodeCommandParameters, index)
+            except: return False
+            if value is None and kind not in _OPTIONAL_COMPONENTS: return False
+            self.commandValues[name] = value
+            index = new_index
+
+        return True
+
+    @classmethod
+    def fromDeviceData(cls, data):
+        frame = NodeCommand(())
+        return frame if frame.parseData(data) else None
+
+    def toDeviceData(self):
+        table = z.SUBCMD_TO_PARSE_TABLE[(self.command[0] << 8) + self.command[1]]
+        if table is None: return None
+
+        commandParameters = []
+        for t in table:
+            kind = t[0]
+            name = t[2:-1]
+            v = self.commandValues.get(name)
+            if v is None and kind not in _OPTIONAL_COMPONENTS: return None
+
+            try:    commandParameters += _PARSE_ACTIONS[kind][1](v)
+            except: return None
+
+        command = list(self.command)
+        if self.endPoint is not None:
+            command = list(z.MultiChannel_CmdEncap) + [0, self.endPoint] + command
+
+        return command + commandParameters
+
+    def toString(self):
+        return z.SUBCMD_TO_STRING[(self.command[0] << 8) + self.command[1]] + " " + str(self.commandValues)

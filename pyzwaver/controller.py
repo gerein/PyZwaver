@@ -243,13 +243,9 @@ class Controller:
         out = []
         nodes = sorted(self.nodes)
         for n in nodes:
-            line = "%2d: " % n
             routes = self.routes.get(n, set())
-            for m in nodes:
-                if m in routes:
-                    line += "#"
-                else:
-                    line += " "
+            line = "%2d: " % n
+            for m in nodes: line += "#" if m in routes else " "
             out.append(line)
         return "\n".join(out)
 

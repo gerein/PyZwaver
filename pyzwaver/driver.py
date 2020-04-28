@@ -28,17 +28,8 @@ import time
 
 from pyzwaver.serial_frame import *
 from pyzwaver.transaction import Transaction
+from pyzwaver.command import NodeCommand
 from pyzwaver import zwave as z
-
-
-def MakeSerialDevice(port="/dev/ttyUSB0"):
-    dev = serial.Serial(port=port,
-                        baudrate=115200,
-                        parity=serial.PARITY_NONE,
-                        stopbits=serial.STOPBITS_ONE,
-                        bytesize=serial.EIGHTBITS,
-                        timeout=0.1)
-    return dev
 
 
 
@@ -117,56 +108,67 @@ class Driver(object):
 
     TERMINATE = 0xFFFF
 
+    @staticmethod
+    def MakeSerialDevice(port="/dev/ttyUSB0"):
+        return serial.Serial(port=port, baudrate=115200, parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE,
+                             bytesize=serial.EIGHTBITS, timeout=0.1)
+
     def __init__(self, serialDevice):
-        self._device: serial.Serial = serialDevice
+        self.device:serial.Serial = serialDevice
 
-        self.outQueue = MessageQueueOut()  # stuff being send to the stick
-        self.inQueue = queue.Queue()  # stuff coming from the stick unrelated to ongoing transaction
-
-        self._terminate = False  # True if we want to shut things down
-        self._listeners = []   # receive all the stuff from _in_queue
-
+        # This synchronizes writing to the ZWave device. Likely not necessary, since Transactions
+        # are also synced, but avoids unlikely race conditions.
         self.writeLock = threading.Lock()
-        self.transactionLock = threading.RLock()
-        self.transactionClearedEvent = threading.Event()
 
         # Make sure we flush old stuff
         self.writeToDevice(ConfirmationFrame(ConfirmationFrame.FrameType.NAK))
         self.writeToDevice(ConfirmationFrame(ConfirmationFrame.FrameType.NAK))
         self.writeToDevice(ConfirmationFrame(ConfirmationFrame.FrameType.NAK))
-        self._device.flushInput()
-        self._device.flushOutput()
+        self.device.flushInput()
+        self.device.flushOutput()
 
         self.writeToDevice(ConfirmationFrame(ConfirmationFrame.FrameType.NAK))
         self.writeToDevice(ConfirmationFrame(ConfirmationFrame.FrameType.NAK))
         self.writeToDevice(ConfirmationFrame(ConfirmationFrame.FrameType.NAK))
-        self._device.flushInput()
-        self._device.flushOutput()
+        self.device.flushInput()
+        self.device.flushOutput()
 
-        self.ongoingTransaction: Transaction = None
-        self.confirmationTimeoutThread = None
-        self.openTransactions = []
+        self._terminate = False  # flag for Threads to shut-down
 
-        self._tx_thread = threading.Thread(target=self.NewRequestProcessingThread, name="DriverSend")
-        self._tx_thread.start()
+        # Step 1: Set up CallBackThread to inform listeners of incoming messages
+        self.listeners = []                         # callBack listeners for CallBackThread
+        self.callBackQueue = queue.Queue()          # requests coming from the stick unrelated to an ongoing transaction to be distributed
+        self.callBackThread = threading.Thread(target=self.CallbackThread, name="CallbackThread")
+        self.callBackThread.start()
 
-        self._rx_thread = threading.Thread(target=self.DeviceProcessingThread, name="DriverReceive")
-        self._rx_thread.start()
+        # Step 2: Start listening to ZWave device
+        self.ongoingTransaction:Transaction = None  # singular live transaction being processed
+        self.confirmationTimeoutThread = None       # timeout thread related to the singular live transaction
+        self.openTransactions = []                  # backlog of transactions that might still received requests
 
-        self._forwarding_thread = threading.Thread(target=self.CallbackThread, name="DriverForward")
-        self._forwarding_thread.start()
+        self.transactionLock = threading.RLock()    # synchronizes any changes to ongoing/open transcations
+        self.transactionClearedEvent = threading.Event()   # flags that the live transaction has finished and a new one can be send
 
+        self.deviceProcessingThread = threading.Thread(target=self.DeviceProcessingThread, name="DeviceProcessingThread")
+        self.deviceProcessingThread.start()
 
-    def AddListener(self, l):
-        self._listeners.append(l)
+        # Step 3: Start processing requests to send to stick
+        self.newRequestQueue = MessageQueueOut()    # queued requests to be send to the ZWave device
+        self.newRequestProcessingThread = threading.Thread(target=self.NewRequestProcessingThread, name="NewRequestProcessingThread")
+        self.newRequestProcessingThread.start()
 
-    def sendNodeCommand(self, nodes, nodeCommand:tuple, nodeCommandValues:dict, priority:tuple, txOptions:tuple=NodeCommandFrame.standardTX, callback=None):
-        dataFrame = NodeCommandFrame(nodes, nodeCommand, nodeCommandValues, txOptions)
-        self.outQueue.put(priority, (dataFrame, 5.0, callback)) #FIXME: timeout
+    def addListener(self, l):
+        self.listeners.append(l)
+
+    def sendNodeCommand(self, nodes, nodeCommand:tuple, nodeCommandValues:dict, priority:tuple, txOptions:tuple=SendDataFrame.standardTX, callback=None):
+        nodes = nodes if isinstance(nodes, list) else [nodes]
+        endpoint = nodes[0] & 0xff if len(nodes) == 1 and nodes[0] > 255 else None
+        dataFrame = SendDataFrame(nodes, NodeCommand(nodeCommand, nodeCommandValues, endpoint), txOptions)
+        self.newRequestQueue.put(priority, (dataFrame, 5.0, callback)) #FIXME: timeout
 
     def sendRequest(self, command, commandParameters=None, priority=MessageQueueOut.LOWEST_PRIORITY, timeout=0.0, callback=None):
         dataFrame = CallbackRequest(command, commandParameters) if Transaction.hasRequests(command) else DataFrame(command, commandParameters)
-        self.outQueue.put(priority, (dataFrame, timeout, callback))
+        self.newRequestQueue.put(priority, (dataFrame, timeout, callback))
 
     # Shut down all threads and hence Driver object
     def terminate(self):
@@ -174,24 +176,22 @@ class Driver(object):
         self._terminate = True
 
         # send listeners signal to shutdown
-        self.inQueue.put((self.TERMINATE, None))
-        self.outQueue.put(MessageQueueOut.LOWEST_PRIORITY, (self.TERMINATE, None, 0, None))
+        self.callBackQueue.put((self.TERMINATE, None))
+        self.newRequestQueue.put(MessageQueueOut.LOWEST_PRIORITY, (self.TERMINATE, None, 0, None))
 
         logging.info("Driver terminated")
-
 
     def writeToDevice(self, dataFrame: SerialFrame):
         with self.writeLock:
             logging.info(">>>: %s", dataFrame.toString())
             logging.debug(">>>: [ %s ]", " ".join(["%02x" % i for i in dataFrame.toDeviceData()]))
-            self._device.write(dataFrame.toDeviceData())
-            self._device.flush()
+            self.device.write(dataFrame.toDeviceData())
+            self.device.flush()
 
-
-    def confirmationTimeout(self, timeout=True):
     # This will handle retransmission of requests if we do not receive an ACK,
     # mostly due to timeouts (called by the Timer object attached to ongoingTransaction),
     # but also when we receive a NAK/CAN
+    def confirmationIssueHandler(self, timeout=True):
         with self.transactionLock:
             if not self.ongoingTransaction: return
             if self.ongoingTransaction.status != Transaction.TransactionStatus.WAIT_FOR_CONFIRMATION: return
@@ -213,7 +213,7 @@ class Driver(object):
 
             logging.info("X>>: Retransmitting request for current transaction (retry %d)", self.ongoingTransaction.retransmissions + 1)
 
-            self.confirmationTimeoutThread = threading.Timer(1.5, self.confirmationTimeout)
+            self.confirmationTimeoutThread = threading.Timer(1.5, self.confirmationIssueHandler)
             self.writeToDevice(self.ongoingTransaction.request)
             self.confirmationTimeoutThread.start()
             self.ongoingTransaction.retransmissions += 1
@@ -221,16 +221,13 @@ class Driver(object):
     # This will cancel a transaction if it times out (called by Timer object attached to
     # each transaction). Any responses/requests related to this transcation received after
     # cancellation are ignored
-
-    def transactionTimeout(self, transaction):
-        if transaction.ended(): return
-
-        logging.error("XXX: Transaction timed out: %s", transaction.request.toString())
-
-        if transaction == self.ongoingTransaction:
-            self.confirmationTimeoutThread.cancel()
-
+    def transactionTimeoutHandler(self, transaction):
         with self.transactionLock:
+            if transaction.ended(): return   # double-check in case we were stuck on the transactionLock while the transaction ended
+
+            if transaction == self.ongoingTransaction:   # cancel confirmation timer immediately - we only need one timeout
+                self.confirmationTimeoutThread.cancel()
+
             transaction.processTimeout()
             if transaction in self.openTransactions: self.openTransactions.remove(transaction)
             if transaction == self.ongoingTransaction:
@@ -241,7 +238,7 @@ class Driver(object):
     # transactionClearedEvent (previous live Transaction finished) and transmits the next one
     def NewRequestProcessingThread(self):
         while not self._terminate:
-            dataFrame, timeout, callback = self.outQueue.get()
+            dataFrame, timeout, callback = self.newRequestQueue.get()
             if dataFrame.serialCommand == self.TERMINATE: break
 
             with self.transactionLock:
@@ -250,12 +247,11 @@ class Driver(object):
 
                 if timeout == 0.0:
                     timeout = 2.0 if not self.ongoingTransaction.hasRequests(dataFrame.serialCommand) else 2.5
-                self.confirmationTimeoutThread = threading.Timer(1.5, self.confirmationTimeout, [self.ongoingTransaction])
-                transactionTimeoutThread = threading.Timer(timeout, self.transactionTimeout, [self.ongoingTransaction])
+                self.confirmationTimeoutThread = threading.Timer(1.5, self.confirmationIssueHandler, [self.ongoingTransaction])
+                transactionTimeoutThread = threading.Timer(timeout, self.transactionTimeoutHandler, [self.ongoingTransaction])
 
-                logging.info("==>: Transaction started %s", self.ongoingTransaction.request.toString())
-                self.writeToDevice(self.ongoingTransaction.request)
                 self.ongoingTransaction.start(transactionTimeoutThread)
+                self.writeToDevice(self.ongoingTransaction.request)
                 self.confirmationTimeoutThread.start()
 
             self.transactionClearedEvent.wait()
@@ -267,7 +263,7 @@ class Driver(object):
     # received messages to the appropriate handler (ongoing Transaction, command_translator, etc)
     def DeviceProcessingThread(self):
         while not self._terminate:
-            b = self._device.read()
+            b = self.device.read()  # this is non-blocking (see MakeSerialDevice)
             if not b: continue
             r = ord(b)  # we store everything as int
 
@@ -281,7 +277,7 @@ class Driver(object):
 
                 timestamp = time.time()   # we have 1.5 seconds to read the data frame
                 while time.time() - timestamp < 1.5 and checksum == -1 and not self._terminate:
-                    b = self._device.read()
+                    b = self.device.read()   # this is non-blocking (see MakeSerialDevice)
                     if not b: continue
                     r = ord(b)  # we store everything as int
 
@@ -294,9 +290,9 @@ class Driver(object):
                 frameData = [z.SOF, length] + data + [checksum]
 
                 # ok, we received a full data frame - let's check it decide what to do with it
-                dataFrame = NodeCommandFrame.fromDeviceData(frameData)
-                if not dataFrame: dataFrame = CallbackRequest.fromDeviceData(frameData)
-                if not dataFrame: dataFrame = DataFrame.fromDeviceData(frameData)
+                dataFrame = AppCommandFrame.fromDeviceData(frameData)                     # is it a valid AppCommandFrame?
+                if not dataFrame: dataFrame = CallbackRequest.fromDeviceData(frameData)   # nope! Is it a valid CallbackRequest?
+                if not dataFrame: dataFrame = DataFrame.fromDeviceData(frameData)         # nope! Is it at least a valid generic DataFrame?
 
                 logging.debug("<<<: [ %s ]: %s", " ".join(["%02x" % i for i in frameData]), dataFrame.__class__ if dataFrame else "invalid")
 
@@ -317,8 +313,8 @@ class Driver(object):
                             continue
 
                         if self.ongoingTransaction.ended():
+                            # this response has concluded our ongoing transaction
                             self.ongoingTransaction.transactionTimeoutThread.cancel()
-                            logging.info("<==: Transaction completed %s", self.ongoingTransaction.request.toString())
                             self.ongoingTransaction = None
                             self.transactionClearedEvent.set()
                         elif self.ongoingTransaction.status == Transaction.TransactionStatus.WAIT_FOR_REQUEST:
@@ -338,18 +334,17 @@ class Driver(object):
                         if dataFrame.serialCommand == z.API_ZW_APPLICATION_UPDATE:
                             # application updates are handed to the listeners (asynchronously)
                             logging.info("===: Received application update: %s", dataFrame.toString())
-                            self.inQueue.put((dataFrame.serialCommand, dataFrame.serialCommandParameters))
+                            self.callBackQueue.put((dataFrame.serialCommand, dataFrame.serialCommandParameters))
                             continue
 
                         if dataFrame.serialCommand == z.API_APPLICATION_COMMAND_HANDLER:
-                            if not isinstance(dataFrame, NodeCommandFrame):
                             # application commands are handed to the listeners (asynchronously)
+                            if not isinstance(dataFrame, AppCommandFrame):
                                 # we couldn't parse this one --> ignore
                                 logging.error("==X: Received malformed device-request: %s", dataFrame.toString())
                                 continue
                             logging.info("===: Received device-request: %s", dataFrame.toString())
-                            commandParameters = (dataFrame.nodes[0], dataFrame.nodeCommand, dataFrame.nodeCommandValues)
-                            self.inQueue.put((dataFrame.serialCommand, commandParameters))
+                            self.callBackQueue.put((dataFrame.serialCommand, (dataFrame.srcNode, dataFrame.nodeCommand)))
                             continue
 
                         # this request should relate to the ongoing or an open back-book transaction, let's find the right one
@@ -368,9 +363,8 @@ class Driver(object):
                             continue
 
                         if matchingTransaction.ended():
-                            matchingTransaction.transactionTimeoutThread.cancel()
-                            logging.info("<==: Transaction completed %s", matchingTransaction.request.toString())
                             # this request has concluded a transaction
+                            matchingTransaction.transactionTimeoutThread.cancel()   # cancel the timeout thread
 
                             if self.ongoingTransaction == matchingTransaction:
                                 self.ongoingTransaction = None
@@ -401,7 +395,6 @@ class Driver(object):
                         if self.ongoingTransaction.ended():
                             # the transactions is already done --> clean-up, ready for next one
                             self.ongoingTransaction.transactionTimeoutThread.cancel()
-                            logging.info("<==: Transaction completed %s", self.ongoingTransaction.request.toString())
                             self.ongoingTransaction = None
                             self.transactionClearedEvent.set()
 
@@ -418,7 +411,7 @@ class Driver(object):
                        serialFrame.frameType == serialFrame.FrameType.CAN:
                         # we treat NAK and CAN the same as a confirmation time-out --> retransmit up to 3 times
                         self.confirmationTimeoutThread.cancel()
-                        self.confirmationTimeout(timeout=False)
+                        self.confirmationIssueHandler(timeout=False)
                         continue
 
         logging.info("DeviceProcessingThread terminated")
@@ -427,9 +420,9 @@ class Driver(object):
     # related to a live transaction to registered listeners (command_translator) for asynchronous processing
     def CallbackThread(self):
         while not self._terminate:
-            command, commandParameters = self.inQueue.get()
+            command, commandParameters = self.callBackQueue.get()
             if command == self.TERMINATE: break
 
-            for listener in self._listeners: listener.put(command, commandParameters)
+            for listener in self.listeners: listener.put(command, commandParameters)
 
         logging.info("CallbackThread terminated")
