@@ -18,7 +18,6 @@ from enum import Enum
 
 import pyzwaver.zwave as z
 from pyzwaver.command import NodeCommand
-#from pyzwaver.transaction import Transaction
 
 
 class SerialFrame:
@@ -110,6 +109,7 @@ class CallbackRequest(DataFrame):
 
     def __init__(self, serialCommand, serialCommandParameters=None):
         super().__init__(serialCommand, serialCommandParameters)
+        self.commandParameters = serialCommandParameters
         self.callbackId = CallbackRequest.createCallbackId()
 
     def parseData(self, data):
@@ -137,55 +137,6 @@ class CallbackRequest(DataFrame):
         return self.outPrefix() + " [ " + " ".join(["%02x" % i for i in self.commandParameters]) + " ]"
 
 
-class SendDataFrame(CallbackRequest):
-    TXoptions = Enum('TXoptions', {'ACK': z.TRANSMIT_OPTION_ACK, 'AUTO_ROUTE': z.TRANSMIT_OPTION_AUTO_ROUTE, 'EXPLORE': z.TRANSMIT_OPTION_EXPLORE, 'LOW_POWER': z.TRANSMIT_OPTION_EXPLORE, 'NO_ROUTE': z.TRANSMIT_OPTION_NO_ROUTE})
-    standardTX = (TXoptions.ACK, TXoptions.AUTO_ROUTE, TXoptions.EXPLORE)
-
-    def __init__(self, nodes, nodeCommand:NodeCommand, txOptions:tuple=standardTX):
-        super().__init__(z.API_ZW_SEND_DATA)
-        self.nodes = nodes if isinstance(nodes, list) else [nodes]
-        if len(self.nodes) > 1: self.serialCommand = z.API_ZW_SEND_DATA_MULTI
-        self.nodeCommand = nodeCommand
-        self.txOptions = txOptions
-
-    def txToInt(self):
-        txData = 0
-        for tx in self.txOptions: txData |= tx.value
-        return txData
-
-    def parseData(self, data):
-        if not super().parseData(data): return False
-        if self.serialCommand != z.API_ZW_SEND_DATA: return False
-        if len(self.serialCommandParameters) < 1: return False
-
-        if self.frameType != DataFrame.FrameType.RESPONSE:
-            self.retval = self.serialCommandParameters[0] != 0
-        else:
-            if self.serialCommandParameters[0] not in z.TRANSMIT_COMPLETE_TO_STRING: return False
-            self.txStatus = self.serialCommandParameters[0]
-
-        return True
-
-    @classmethod
-    def fromDeviceData(cls, data):
-        frame = SendDataFrame(None, None)
-        return frame if frame.parseData(data) else None
-
-    def toDeviceData(self):
-        nodeListData = [n if n <= 255 else n >> 8 for n in self.nodes]
-        if len(nodeListData) > 1: nodeListData = [len(nodeListData)] + nodeListData
-        nodeCommandData = self.nodeCommand.toDeviceData()
-        if nodeCommandData is None: return None
-
-        out = [len(nodeListData) + len(nodeCommandData) + 6, self.frameType.value, self.serialCommand] + nodeListData + \
-              [len(nodeCommandData)] + nodeCommandData + [self.txToInt(), self.callbackId]
-        return [z.SOF] + out + [self.checksum(out)]
-
-    def toString(self):
-        nodesOut = "DstNodes:[" + " ".join(["%02x" % n for n in self.nodes]) + "]"
-        return super().outPrefix() + " (TX:%02x" % self.txToInt() + ") " + nodesOut + " " + self.nodeCommand.toString()
-
-
 class AppCommandFrame(DataFrame):
 
     def parseData(self, data):
@@ -199,7 +150,7 @@ class AppCommandFrame(DataFrame):
         self.nodeCommand = NodeCommand.fromDeviceData(self.serialCommandParameters[3:])
         if self.nodeCommand is None: return False
 
-        if self.nodeCommand.endPoint is not None:
+        if self.nodeCommand.endpoint is not None:
             self.srcNode = (self.srcNode << 8) + self.nodeCommand.endPoint
 
         # We're ignoring rxSSIVal & securitykey

@@ -206,7 +206,7 @@ class Controller:
 
     """
 
-    def __init__(self, message_queue: Driver, pairing_timeout_secs=15.0):
+    def __init__(self, driver: Driver, pairing_timeout_secs=15.0):
         """
         :param message_queue:  is used to send commands to the controller and other zwave nodes.
                                The other end of the queue must be handled by the driver.
@@ -215,7 +215,7 @@ class Controller:
         # self._event_cb = event_cb
         self._pairing_timeout_sec = pairing_timeout_secs
         self._state = CONTROLLER_STATE_NONE
-        self._mq = message_queue
+        self.driver = driver
         self.nodes = set()
         self.failed_nodes = set()
         self.props = ControllerProperties()
@@ -228,10 +228,6 @@ class Controller:
             self.StringRoutes(),
         ]
         return "\n".join(out)
-
-    @classmethod
-    def Priority(cls):
-        return MessageQueueOut.CONTROLLER_PRIORITY
 
     def StringBasic(self):
         return "\n".join([
@@ -258,21 +254,21 @@ class Controller:
                 logging.debug("Handling version response: %s", data)
                 self.props.SetVersion(*struct.unpack(">12sB", bytes(data)))
 
-        self.SendCommand(z.API_ZW_GET_VERSION, [], handler)
+        self.driver.sendRequest(z.API_ZW_GET_VERSION, [], callback=handler)
 
     def UpdateId(self):
         def handler(callbackReason, data):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             self.props.SetId(*struct.unpack(">IB",bytes(data)))
 
-        self.SendCommand(z.API_ZW_MEMORY_GET_ID, [], handler)
+        self.driver.sendRequest(z.API_ZW_MEMORY_GET_ID, [], callback=handler)
 
     def UpdateControllerCapabilities(self):
         def handler(callbackReason, data):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             self.props.SetControllerCapabilites(data[0])
 
-        self.SendCommand(z.API_ZW_GET_CONTROLLER_CAPABILITIES, [], handler)
+        self.driver.sendRequest(z.API_ZW_GET_CONTROLLER_CAPABILITIES, [], callback=handler)
 
     def UpdateSerialApiGetCapabilities(self):
         """
@@ -282,7 +278,7 @@ class Controller:
             if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             self.props.SetSerialCapabilities(*struct.unpack(">HHHH32s", bytes(data)))
 
-        self.SendCommand(z.API_SERIAL_API_GET_CAPABILITIES, [], handler)
+        self.driver.sendRequest(z.API_SERIAL_API_GET_CAPABILITIES, [], callback=handler)
 
     def UpdateSerialApiGetInitData(self):
         """This get all the node numbers"""
@@ -292,16 +288,16 @@ class Controller:
             bits = self.props.SetInitAndReturnBits(*struct.unpack(">BBB29sBB", bytes(data)))
             self.nodes = ExtractNodes(bits)
 
-        self.SendCommand(z.API_SERIAL_API_GET_INIT_DATA, [], handler)
+        self.driver.sendRequest(z.API_SERIAL_API_GET_INIT_DATA, [], callback=handler)
 
     def SetTimeouts(self, ack_timeout_msec, byte_timeout_msec):
         def handler(callbackReason, data):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             logging.info("previous timeouts: %d %d", data[0] * 10, data[1] * 10)
 
-        self.SendCommand(z.API_SERIAL_API_SET_TIMEOUTS,
+        self.driver.sendRequest(z.API_SERIAL_API_SET_TIMEOUTS,
                          [ack_timeout_msec // 10, byte_timeout_msec // 10],
-                         handler)
+                         callback=handler)
 
     def UpdateSucNodeId(self):
         def handler(callbackReason, data):
@@ -309,7 +305,7 @@ class Controller:
             succ_node = data[0]
             logging.info("suc node id: %s", succ_node)
 
-        self.SendCommand(z.API_ZW_GET_SUC_NODE_ID, [], handler)
+        self.driver.sendRequest(z.API_ZW_GET_SUC_NODE_ID, [], callback=handler)
 
     def GetRandom(self, _, cb):
         def handler(callbackReason, data):
@@ -319,7 +315,7 @@ class Controller:
             data = data[2:2 + size]
             cb(success, data)
 
-        self.SendCommand(z.API_ZW_GET_RANDOM, [], handler)
+        self.driver.sendRequest(z.API_ZW_GET_RANDOM, [], callback=handler)
 
     def UpdateFailedNode(self, node: int):
         def handler(callbackReason, data):
@@ -329,7 +325,7 @@ class Controller:
             else:
                 self.failed_nodes.discard(node)
 
-        self.SendCommand(z.API_ZW_IS_FAILED_NODE_ID, [node], handler)
+        self.driver.sendRequest(z.API_ZW_IS_FAILED_NODE_ID, [node], callback=handler)
 
     def ReadMemory(self, offset: int, length: int, cb):
         def handler(callbackReason, data):
@@ -337,24 +333,24 @@ class Controller:
             logging.info("received %x bytes", len(data))
             cb(data)
 
-        self.SendCommand(z.API_ZW_READ_MEMORY,
+        self.driver.sendRequest(z.API_ZW_READ_MEMORY,
                          [offset >> 8, offset & 0xff, length],
-                         handler)
+                         callback=handler)
 
     def GetRoutingInfo(self, node: int, rem_bad, rem_non_repeaters, cb):
         def handler(callbackReason, data):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             cb(node, ExtractNodes(data))
 
-        self.SendCommand(z.API_ZW_GET_ROUTING_INFO,
+        self.driver.sendRequest(z.API_ZW_GET_ROUTING_INFO,
                          [node, rem_bad, rem_non_repeaters, 3],
-                         handler)
+                         callback=handler)
 
     def SetPromiscuousMode(self, state):
         def handler(callbackReason, data):
             pass
 
-        self.SendCommand(z.API_ZW_SET_PROMISCUOUS_MODE, [state], handler)
+        self.driver.sendRequest(z.API_ZW_SET_PROMISCUOUS_MODE, [state], callback=handler)
 
     def RequestNodeInfo(self, node: int, cb=None):
         """Force the generation of a zwave.API_ZW_APPLICATION_UPDATE event
@@ -366,7 +362,7 @@ class Controller:
             if cb:
                 cb(data[0])
 
-        self.SendCommand(z.API_ZW_REQUEST_NODE_INFO, [node], handler)
+        self.driver.sendRequest(z.API_ZW_REQUEST_NODE_INFO, [node], callback=handler)
 
     def RemoveFailedNode(self, node: int, cb):  # FIXME: figure out flow and if it still works correctly, currently not used
         def handler(callbackReason, data):
@@ -377,7 +373,7 @@ class Controller:
             else:
                 return cb(data[1])
 
-        self.SendCommand(z.API_ZW_REMOVE_FAILED_NODE_ID, [node], handler)
+        self.driver.sendRequest(z.API_ZW_REMOVE_FAILED_NODE_ID, [node], callback=handler)
 
     # ============================================================
     # Routing
@@ -439,7 +435,7 @@ class Controller:
     def NeighborUpdate(self, node: int, event_cb):
         activity = "NeighborUpdate",
 
-        def Handler(callbackReason, data):
+        def handler(callbackReason, data):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT:
                 logging.error("[%s] Aborted", activity)
                 event_cb(activity, EVENT_PAIRING_ABORTED, node)
@@ -463,51 +459,42 @@ class Controller:
                 return True
 
         logging.warning("NeighborUpdate(%d)", node)
-        return self.SendCommand(z.API_ZW_REQUEST_NODE_NEIGHBOR_UPDATE, [node], Handler,
-                                      timeout=self._pairing_timeout_sec)
+        self.driver.sendRequest(z.API_ZW_REQUEST_NODE_NEIGHBOR_UPDATE, [node], timeout=self._pairing_timeout_sec, callback=handler)
 
     def AddNodeToNetwork(self, event_cb):
         logging.warning("AddNodeToNetwork")
-        mode = [z.ADD_NODE_ANY]
         cb = self.MakeFancyReceiver(ACTIVITY_ADD_NODE, HANDLER_TYPE_ADD_NODE, event_cb)
-        return self.SendCommand(z.API_ZW_ADD_NODE_TO_NETWORK, mode, cb, timeout=self._pairing_timeout_sec)
+        self.driver.sendRequest(z.API_ZW_ADD_NODE_TO_NETWORK, [z.ADD_NODE_ANY], timeout=self._pairing_timeout_sec, callback=cb)
 
     def StopAddNodeToNetwork(self, event_cb):
         logging.warning("StopAddNodeToNetwork")
-        mode = [z.ADD_NODE_STOP]
         cb = self.MakeFancyReceiver(ACTIVITY_STOP_ADD_NODE, HANDLER_TYPE_STOP, event_cb)
-        return self.SendCommand(z.API_ZW_ADD_NODE_TO_NETWORK, mode, cb, timeout=5)
+        self.driver.sendRequest(z.API_ZW_ADD_NODE_TO_NETWORK, [z.ADD_NODE_STOP], timeout=5, callback=cb)
 
     def RemoveNodeFromNetwork(self, event_cb):
         logging.warning("RemoveNodeFromNetwork")
-        mode = [z.REMOVE_NODE_ANY]
         cb = self.MakeFancyReceiver(ACTIVITY_REMOVE_NODE, HANDLER_TYPE_REMOVE_NODE, event_cb)
-        return self.SendCommand(z.API_ZW_REMOVE_NODE_FROM_NETWORK, mode, cb, timeout=self._pairing_timeout_sec)
+        self.driver.sendRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, [z.REMOVE_NODE_ANY], cb, timeout=self._pairing_timeout_sec)
 
     def StopRemoveNodeFromNetwork(self, _):
-        mode = [z.REMOVE_NODE_STOP]
         # NOTE: this will sometimes result in a "stray request" being sent back:
         #  SOF len:07 REQU API_ZW_REMOVE_NODE_FROM_NETWORK:4b cb:64 status:06 00 00 chk:d1
         # We just drop this message on the floor
-        return self.SendCommand(z.API_ZW_REMOVE_NODE_FROM_NETWORK, mode)
+        self.driver.sendRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, [z.REMOVE_NODE_STOP])
 
     def SetLearnMode(self, event_cb):
-        mode = [z.LEARN_MODE_NWI]
         cb = self.MakeFancyReceiver(ACTIVITY_SET_LEARN_MODE, HANDLER_TYPE_SET_LEARN_MODE, event_cb)
-        return self.SendCommand(z.API_ZW_SET_LEARN_MODE, mode, cb, timeout=self._pairing_timeout_sec)
+        self.driver.sendRequest(z.API_ZW_SET_LEARN_MODE, [z.LEARN_MODE_NWI], timeout=self._pairing_timeout_sec, callback=cb)
 
     def StopSetLearnMode(self, _):
-        mode = [z.LEARN_MODE_DISABLE]
-        return self.SendCommand(z.API_ZW_SET_LEARN_MODE, mode)
+        self.driver.sendRequest(z.API_ZW_SET_LEARN_MODE, [z.LEARN_MODE_DISABLE])
 
     def ChangeController(self, event_cb):
-        mode = [z.CONTROLLER_CHANGE_START]
         cb = self.MakeFancyReceiver(ACTIVITY_CHANGE_CONTROLLER, HANDLER_TYPE_ADD_NODE, event_cb)
-        return self.SendCommand(z.API_ZW_CONTROLLER_CHANGE, mode, cb, timeout=self._pairing_timeout_sec)
+        self.driver.sendRequest(z.API_ZW_CONTROLLER_CHANGE, [z.CONTROLLER_CHANGE_START], timeout=self._pairing_timeout_sec, callback=cb)
 
     def StopChangeController(self, _):
-        mode = [z.CONTROLLER_CHANGE_STOP]
-        return self.SendCommand(z.API_ZW_CONTROLLER_CHANGE, mode)
+        self.driver.sendRequest(z.API_ZW_CONTROLLER_CHANGE, [z.CONTROLLER_CHANGE_STOP])
 
     # ============================================================
     # ============================================================
@@ -519,20 +506,20 @@ class Controller:
             logging.warning("controller is now initialized")
             self._state = CONTROLLER_STATE_INITIALIZED
 
-        self.SendCommand(z.API_SERIAL_API_APPL_NODE_INFORMATION,
-                         [_APPLICATION_NODEINFO_LISTENING,
-                          2,  # generic
-                          1,  # specific
-                          0,  # rest: size + data
-                          ],
-                         handler)
+        self.driver.sendRequest(z.API_SERIAL_API_APPL_NODE_INFORMATION,
+                                [_APPLICATION_NODEINFO_LISTENING,
+                                 2,  # generic
+                                 1,  # specific
+                                 0,  # rest: size + data
+                                 ],
+                                callback=handler)
 
     def SendNodeInformation(self, dst_node: int, xmit: int, cb):
         def handler(callbackReason, data):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             cb(data)
 
-        self.SendCommand(z.API_ZW_SEND_NODE_INFORMATION, [dst_node, xmit], handler)
+        self.driver.sendRequest(z.API_ZW_SEND_NODE_INFORMATION, [dst_node, xmit], callback=handler)
 
     def SetDefault(self):
         """Factory reset the controller"""
@@ -541,17 +528,15 @@ class Controller:
             if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             logging.warning("set default response %s", data)
 
-        self.SendCommand(z.API_ZW_SET_DEFAULT, [], handler)
+        self.driver.sendRequest(z.API_ZW_SET_DEFAULT, [], callback=handler)
 
     def SoftReset(self):
         def handler(callbackReason, data):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
             logging.warning("soft reset response %s", data)
 
-        self.SendCommand(z.API_SERIAL_API_SOFT_RESET, [], handler, timeout=2.0)
+        self.driver.sendRequest(z.API_SERIAL_API_SOFT_RESET, [], timeout=2.0, callback=handler)
 
-    def SendCommand(self, command, commandParameters=None, handler=None, timeout=0.0):
-        self._mq.sendRequest(command, commandParameters, self.Priority(), timeout, handler)
 
     def Initialize(self):
         self.UpdateVersion()

@@ -495,22 +495,17 @@ def MaybePatchCommand(m):
 
 class NodeCommand:
 
-    def __init__(self, command:tuple, commandValues:dict=None, endPoint=None):
+    def __init__(self, command:tuple, commandValues:dict=None, endpoint=None):
         if commandValues is None: commandValues = {}
         self.command = command
         self.commandValues = commandValues
-        self.endPoint = endPoint
+        self.endpoint = endpoint
+        self.endpointCommand = None
 
     def parseData(self, data):
         if len(data) < 2: return False
         self.command = (data[0], data[1])
         nodeCommandParameters = data[2:]
-
-        if self.command == z.MultiChannel_CmdEncap:
-            if len(nodeCommandParameters) < 4: return False
-            self.endPoint = nodeCommandParameters[0]
-            self.command = (nodeCommandParameters[2], nodeCommandParameters[3])
-            nodeCommandParameters = nodeCommandParameters[4:]
 
         table = z.SUBCMD_TO_PARSE_TABLE.get((self.command[0] << 8) + self.command[1])
         if table is None: return False
@@ -518,13 +513,17 @@ class NodeCommand:
         self.commandValues = {}
         index = 0
         for t in table:
-            kind = t[0]
-            name = t[2:-1]
+            kind, name = t[0], t[2:-1]
             try:    new_index, value = _PARSE_ACTIONS[kind][0](nodeCommandParameters, index)
             except: return False
             if value is None and kind not in _OPTIONAL_COMPONENTS: return False
             self.commandValues[name] = value
             index = new_index
+
+        if self.command == z.MultiChannel_CmdEncap:
+            self.endpoint = self.commandValues['src']
+            self.endpointCommand = NodeCommand.fromDeviceData(self.commandValues['command'])
+            return self.endpoint is not None
 
         return True
 
@@ -534,22 +533,20 @@ class NodeCommand:
         return frame if frame.parseData(data) else None
 
     def toDeviceData(self):
-        table = z.SUBCMD_TO_PARSE_TABLE[(self.command[0] << 8) + self.command[1]]
+        table = z.SUBCMD_TO_PARSE_TABLE.get((self.command[0] << 8) + self.command[1])
         if table is None: return None
 
         commandParameters = []
         for t in table:
-            kind = t[0]
-            name = t[2:-1]
-            v = self.commandValues.get(name)
-            if v is None and kind not in _OPTIONAL_COMPONENTS: return None
+            kind, name = t[0], t[2:-1]
+            if name not in self.commandValues and kind not in _OPTIONAL_COMPONENTS: return None
 
-            try:    commandParameters += _PARSE_ACTIONS[kind][1](v)
+            try:    commandParameters += _PARSE_ACTIONS[kind][1](self.commandValues[name])
             except: return None
 
         command = list(self.command)
-        if self.endPoint is not None:
-            command = list(z.MultiChannel_CmdEncap) + [0, self.endPoint] + command
+        if self.endpoint is not None:
+            command = list(z.MultiChannel_CmdEncap) + [0, self.endpoint] + command
 
         return command + commandParameters
 

@@ -20,34 +20,35 @@ node.py provides the Node and NodeSet abstraction
 """
 
 import logging
+import struct
+import time
 from typing import List, Set, Mapping
+from enum import Enum
 
 from pyzwaver import command_helper as ch
 from pyzwaver import zwave as z
 from pyzwaver import command
-from pyzwaver.command_translator import CommandTranslator
 from pyzwaver.value import GetSensorMeta, GetMeterMeta, SENSOR_KIND_BATTERY, SENSOR_KIND_SWITCH_MULTILEVEL, \
     SENSOR_KIND_SWITCH_BINARY, TEMPERATURE_MODES
-from pyzwaver.driver import MessageQueueOut
+
+from pyzwaver.command import NodeCommand
+from pyzwaver.driver import Driver
+from pyzwaver.transaction import Transaction
 
 SECURE_MODE = False
 
 if SECURE_MODE:
     from pyzwaver import security
 
-NODE_STATE_NONE = "00_None"
-NODE_STATE_INCLUDED = "10_Included"
-# discovered means we have the command classes
-NODE_STATE_DISCOVERED = "20_Discovered"
-# interviewed means we have received product info (including most static
-# info an versions)
+NODE_STATE_NONE        = "00_None"
+NODE_STATE_INCLUDED    = "10_Included"   # discovered means we have the command classes
+NODE_STATE_DISCOVERED  = "20_Discovered" # interviewed means we have received product info (including most static info an versions)
 NODE_STATE_INTERVIEWED = "30_Interviewed"
-
-NODE_STATE_KEX_GET = "21_KexGet"
-NODE_STATE_KEX_REPORT = "22_KexReport"
-NODE_STATE_KEX_SET = "23_KexSet"
+NODE_STATE_KEX_GET     = "21_KexGet"
+NODE_STATE_KEX_REPORT  = "22_KexReport"
+NODE_STATE_KEX_SET     = "23_KexSet"
 NODE_STATE_PUBLIC_KEY_REPORT_OTHER = "24_PublicKeyReportOther"
-NODE_STATE_PUBLIC_KEY_REPORT_SELF = "25_PublicKeyReportSelf"
+NODE_STATE_PUBLIC_KEY_REPORT_SELF  = "25_PublicKeyReportSelf"
 
 _NO_VERSION = -1
 _BAD_VERSION = 0
@@ -73,58 +74,34 @@ def _ExtractAssociationInfo(v):
 
 
 _COMMANDS_WITH_MAP_VALUES = {
-    z.Version_CommandClassReport: lambda v: [(v["class"], v["version"])],
-    z.Meter_Report: _ExtractMeter,
-    z.Configuration_Report: lambda v: [(v["parameter"], v["value"])],
-    z.SensorMultilevel_Report: _ExtractSensor,
-    z.ThermostatSetpoint_Report: lambda v: [(v["thermo"], v["value"])],
-    z.Association_Report: lambda v: [(v["group"], v)],
+    z.Version_CommandClassReport:             lambda v: [(v["class"], v["version"])],
+    z.Meter_Report:                           _ExtractMeter,
+    z.Configuration_Report:                   lambda v: [(v["parameter"], v["value"])],
+    z.SensorMultilevel_Report:                _ExtractSensor,
+    z.ThermostatSetpoint_Report:              lambda v: [(v["thermo"], v["value"])],
+    z.Association_Report:                     lambda v: [(v["group"], v)],
     z.AssociationGroupInformation_NameReport: lambda v: [(v["group"], v["name"])],
     z.AssociationGroupInformation_InfoReport: _ExtractAssociationInfo,
     z.AssociationGroupInformation_ListReport: lambda v: [(v["group"], v["commands"])],
-    z.SceneActuatorConf_Report: lambda v: [(v["scene"], v)],
-    z.UserCode_Report: lambda v: [(v["user"], v)],
-    z.MultiChannel_CapabilityReport: lambda v: [(v["endpoint"], v)],
+    z.SceneActuatorConf_Report:               lambda v: [(v["scene"], v)],
+    z.UserCode_Report:                        lambda v: [(v["user"], v)],
+    z.MultiChannel_CapabilityReport:          lambda v: [(v["endpoint"], v)],
 }
 
 _COMMANDS_WITH_SPECIAL_ACTIONS = {
-    #
-    z.ManufacturerSpecific_Report: lambda _ts, node, _values:
-    node.MaybeChangeState(NODE_STATE_INTERVIEWED),
-    #
-    z.ZwavePlusInfo_Report: lambda _ts, node, _values:
-    node.MaybeChangeState(NODE_STATE_INTERVIEWED),
-    #
-    z.SceneActuatorConf_Report: lambda ts, node, values:
-    node.values.Set(ts, command.CUSTOM_COMMAND_ACTIVE_SCENE, values),
-    #
-    z.Security2_KexReport: lambda _ts, node, _values:
-    node.MaybeChangeState(NODE_STATE_KEX_REPORT),
-    #
-    z.Security2_PublicKeyReport: lambda _ts, node, _values:
-    node.MaybeChangeState(NODE_STATE_PUBLIC_KEY_REPORT_OTHER),
-    #
-    z.Security2_NonceGet: lambda _ts, node, values:
-    node.SendNonce(values["seq"]),
+    z.ManufacturerSpecific_Report: lambda node, _values: node.MaybeChangeState(NODE_STATE_INTERVIEWED),
+    z.ZwavePlusInfo_Report:        lambda node, _values: node.MaybeChangeState(NODE_STATE_INTERVIEWED),
+    z.SceneActuatorConf_Report:    lambda node,  values: node.values.Set(command.CUSTOM_COMMAND_ACTIVE_SCENE, values),
+    z.Security2_KexReport:         lambda node, _values: node.MaybeChangeState(NODE_STATE_KEX_REPORT),
+    z.Security2_PublicKeyReport:   lambda node, _values: node.MaybeChangeState(NODE_STATE_PUBLIC_KEY_REPORT_OTHER),
+    z.Security2_NonceGet:          lambda node,  values: node.SendNonce(values["seq"]),
 }
-
-XMIT_OPTIONS_NO_ROUTE = (z.TRANSMIT_OPTION_ACK |
-                         z.TRANSMIT_OPTION_EXPLORE)
-
-XMIT_OPTIONS = (z.TRANSMIT_OPTION_ACK |
-                z.TRANSMIT_OPTION_AUTO_ROUTE |
-                z.TRANSMIT_OPTION_EXPLORE)
-
-XMIT_OPTIONS_SECURE = (z.TRANSMIT_OPTION_ACK |
-                       z.TRANSMIT_OPTION_AUTO_ROUTE)
-
 
 def BitsToSetWithOffset(x: int, offset: int) -> Set[int]:
     out = set()
     pos = 0
     while x:
-        if (x & 1) == 1:
-            out.add(pos + offset)
+        if (x & 1) == 1: out.add(pos + offset)
         pos += 1
         x >>= 1
     return out
@@ -150,21 +127,21 @@ class NodeValues:
     def HasValue(self, key: tuple):
         return key in self._values
 
-    def Set(self, ts, key: tuple, v: Mapping):
+    def Set(self, key: tuple, v: Mapping):
         if v is None:
             return
-        self._values[key] = ts, v
+        self._values[key] = time.time(), v
 
-    def SetMapEntry(self, ts, key: tuple, subkey, v):
+    def SetMapEntry(self, key: tuple, subkey, v):
         if v is None:
             return
         m = self._maps.get(key)
         if m is None:
             m = {}
             self._maps[key] = m
-        m[subkey] = ts, v
+        m[subkey] = time.time(), v
 
-    def Get(self, key: tuple) -> Mapping:
+    def Get(self, key: tuple):
         v = self._values.get(key)
         if v is not None:
             return v[1]
@@ -360,22 +337,40 @@ class NodeValues:
         return "\n".join(out)
 
 
-class Node:
+class NetworkElement:
+    def __init__(self, name=None):
+        self.name = name
+        self.listeners = []
+
+    def addListener(self, listener):
+        self.listeners.append(listener)
+
+    def getName(self):
+        return self.name if self.name is not None else ""
+
+    def SendCommand(self, nodeCommand:NodeCommand, highPriority=True, txOptions:tuple=None):
+        pass
+
+    def put(self, nodeCommand):
+        for listener in self.listeners:
+            listener.put(nodeCommand)
+
+
+class Node(NetworkElement):
     """A Node represents a single node in a network.
 
     Incoming commands are passed to it from Nodeset via put()
     Outgoing commands are send to the CommandTranslator.
     """
 
-    def __init__(self, n, translator: CommandTranslator, is_controller):
-        assert n >= 1
+    def __init__(self, n, driver:Driver, name=None, is_controller=False):
+        super().__init__(name)
         self.n = n
+        self.driver = driver
         self.is_controller = is_controller
-        self.name = "Node %d" % n
-        self._translator = translator
         self.state = NODE_STATE_NONE
         self._controls = set()
-        #
+
         self.values: NodeValues = NodeValues()
         self.is_controller = is_controller
         self.last_contact = 0
@@ -383,11 +378,9 @@ class Node:
         self._tmp_key_ccm = None
         self._tmp_personalization_string = None
 
-    def Name(self):
-        return str(self.n) if self.n <= 255 else "%d.%d" % (self.n >> 8, self.n & 0xff)
-
-    def IsSelf(self):
-        return self.is_controller
+    def getName(self):
+        if self.name is None: return str(self.n)
+        return self.name + " (" + str(self.n) + ")"
 
     def IsInterviewed(self):
         return self.state == NODE_STATE_INTERVIEWED
@@ -406,36 +399,25 @@ class Node:
         ts = 0.0
         for k in cmd:
             if not self.values.HasCommandClass(k):
-                self.values.SetMapEntry(
-                    ts, z.Version_CommandClassReport, k, _NO_VERSION)
+                self.values.SetMapEntry(z.Version_CommandClassReport, k, _NO_VERSION)
         for k in self._controls:
             if not self.values.HasCommandClass(k):
-                self.values.SetMapEntry(
-                    ts, z.Version_CommandClassReport, k, _NO_VERSION)
+                self.values.SetMapEntry(z.Version_CommandClassReport, k, _NO_VERSION)
         for k in std_cmd:
             if not self.values.HasCommandClass(k):
-                self.values.SetMapEntry(
-                    ts, z.Version_CommandClassReport, k, _NO_VERSION)
+                self.values.SetMapEntry(z.Version_CommandClassReport, k, _NO_VERSION)
 
     def BasicString(self):
-        out = [
-            "NODE: %s" % self.Name(),
-            "state: %s" % self.state[3:] if not self.IsFailed() else "FAILED",
-            "version: %d:%d:%d:%d" % self.values.Versions(),
-            "product: %04x:%04x:%04x" % self.values.ProductInfo(),
-            "groups: %d" % len(self.values.AssociationGroupIds()),
-        ]
-        return "  ".join(out)
+        return "NODE: %s " % self.getName() +  \
+               "state: %s " % self.state[3:] if not self.IsFailed() else "FAILED" + \
+               "version: %d:%d:%d:%d " % self.values.Versions() + \
+               "product: %04x:%04x:%04x " % self.values.ProductInfo() + \
+               "groups: %d" % len(self.values.AssociationGroupIds())
 
     def __str__(self):
         return self.BasicString() + "\n" + str(self.values)
 
-    def BatchCommandSubmitFiltered(self, commands: List[tuple], priority: tuple):
-        for c in commands:
-            if len(c) != 2:
-                logging.error("BAD COMMAND: %s", c)
-                assert False
-
+    def BatchCommandSubmitFiltered(self, commands: List[tuple], highPriority=True):
         for key, values in commands:
             if not self.values.HasCommandClass(key[0]):
                 continue
@@ -444,67 +426,145 @@ class Node:
             #    self._secure_messaging.Send(cmd)
             #    continue
 
-            self._translator.SendCommand(self.n, key, values, priority)
+            self.SendCommand(NodeCommand(key, values), highPriority=highPriority)
 
-    def BatchCommandSubmitFilteredSlow(self, commands: List[tuple]):
-        self.BatchCommandSubmitFiltered(commands, MessageQueueOut.NodePriorityLo(self.n))
 
-    def BatchCommandSubmitFilteredFast(self, commands: List[tuple]):
-        self.BatchCommandSubmitFiltered(commands, MessageQueueOut.NodePriorityHi(self.n))
+    TXoptions = Enum('TXoptions', {'ACK': z.TRANSMIT_OPTION_ACK, 'AUTO_ROUTE': z.TRANSMIT_OPTION_AUTO_ROUTE, 'EXPLORE': z.TRANSMIT_OPTION_EXPLORE, 'LOW_POWER': z.TRANSMIT_OPTION_EXPLORE, 'NO_ROUTE': z.TRANSMIT_OPTION_NO_ROUTE})
 
-    # def _IsSecureCommand(self, key0, key1):
-    #    if key0 == z.Security:
-    #        return key1 in [z.Security_NetworkKeySet, z.Security_SupportedGet]
-    #
-    #   return self._secure_commands.HasCommandClass(key0)
+    def SendCommand(self, nodeCommand:NodeCommand, highPriority=True, txOptions:tuple=None):
+        nodeCommandData = nodeCommand.toDeviceData()
+        if nodeCommandData is None:
+            commandIndex = (nodeCommand.command[0] << 8) + nodeCommand.command[1]
+            if commandIndex in z.SUBCMD_TO_STRING:
+                logging.error("XXX: Trying to send command with incomplete values - ignored: %s, %s",
+                              z.SUBCMD_TO_STRING[commandIndex], nodeCommand.commandValues)
+            else:
+                logging.error("Trying to send unknown command - ignored: %s", nodeCommand.command)
+            return
+
+        if txOptions is None: txOptions = (Node.TXoptions.ACK, Node.TXoptions.AUTO_ROUTE, Node.TXoptions.EXPLORE)
+        txData = 0
+        for tx in txOptions: txData |= tx.value
+
+        serialCommandData = [self.n, len(nodeCommandData)] + nodeCommandData + [txData]
+        priority = (Driver.RequestPriority.HIGH_FAIR, self.n) if highPriority else (Driver.RequestPriority.LOW_FAIR, self.n)
+
+        self.driver.sendRequest(z.API_ZW_SEND_DATA, serialCommandData, priority, timeout=5.0)
+
+
+    def GetNodeProtocolInfo(self):
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT:
+                logging.error("==X: GetNodeProtocolInfo (node: %s) timed-out", self.getName())
+                return
+            if len(data) < 5:
+                logging.error("==X: GetNodeProtocolInfo (node: %s): bad payload: %s", self.getName(), data)
+                return
+
+            _BAUD = [
+                "unknown_baud",
+                "9600_baud",
+                "40000_baud",
+                "100000_baud",
+                "unknown_baud",
+                "unknown_baud",
+                "unknown_baud",
+                "unknown_baud",
+            ]
+
+            a, b, _, basic, generic, specific = struct.unpack(">BBBBBB", bytes(data))
+            flags = set()
+            if a & 0x80: flags.add("listening")
+            if a & 0x40: flags.add("routing")
+
+            flags.add(_BAUD[(a & 0x38) >> 3])
+
+            if b & 0x01: flags.add("security")
+            if b & 0x02: flags.add("controller")
+            if b & 0x04: flags.add("specific_device")
+            if b & 0x08: flags.add("routing_slave")
+            if b & 0x10: flags.add("beam_capable")
+            if b & 0x20: flags.add("sensor_250ms")
+            if b & 0x40: flags.add("sensor_1000ms")
+            if b & 0x80: flags.add("optional_functionality")
+            out = {
+                "protocol_version": 1 + (a & 0x7),
+                "flags": flags,
+                "device_type": (basic, generic, specific),
+            }
+            self.values.Set(command.CUSTOM_COMMAND_PROTOCOL_INFO, out)
+
+        logging.info("===: GetNodeProtocolInfo (node: %s)", self.getName())
+        self.driver.sendRequest(z.API_ZW_GET_NODE_PROTOCOL_INFO, [self.n], Driver.RequestPriority.HIGHEST, callback=handler)
+
+
+    def _RequestNodeInfo(self, retries):
+        """This usually triggers send "API_ZW_APPLICATION_UPDATE:"""
+
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT or data[0] == 0:
+                logging.warning("==X: RequestNodeInfo (node: %s) failed: %s", self.getName(), data)
+                self._RequestNodeInfo(retries - 1)
+
+        if retries == 0:
+            logging.error("==X: RequestNodeInfo (node: %s) failed permanently", self.getName())
+            return
+
+        logging.warning("===: RequestNodeInfo (node: %s, retries left: %d)", self.getName(), retries)
+        self.driver.sendRequest(z.API_ZW_REQUEST_NODE_INFO, [self.n], Driver.RequestPriority.HIGHEST, callback=handler)
+
+
+    def Ping(self, retries, reason):
+        logging.info("===: Ping (node: %s): reason %s, retries %d", self.getName(), reason, retries)
+        self.GetNodeProtocolInfo()
+
+        def handler(callbackReason, data):
+            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            failed = data[0] != 0
+            logging.info("===: Pong (node: %s) is-failed: %s, %s", self.getName(), failed, data)
+            self.values.Set(command.CUSTOM_COMMAND_FAILED_NODE, {"failed": failed})
+            if not failed: self._RequestNodeInfo(retries)
+
+        self.driver.sendRequest(z.API_ZW_IS_FAILED_NODE_ID, [self.n], Driver.RequestPriority.HIGHEST, callback=handler)
+
 
     def ProbeNode(self):
-        self.BatchCommandSubmitFilteredFast([(z.NoOperation_Set, {})])
+        self.BatchCommandSubmitFiltered([(z.NoOperation_Set, {})])
 
     #        cmd = zwave_cmd.MakeWakeUpIntervalCapabilitiesGet(
     #            self.n, xmit, driver.GetCallbackId())
     #        driver.Send(cmd, handler, "WakeUpIntervalCapabilitiesGet")
 
     def RefreshAllCommandVersions(self):
-        self.BatchCommandSubmitFilteredSlow(
-            ch.CommandVersionQueries(range(255)))
+        self.BatchCommandSubmitFiltered(ch.CommandVersionQueries(range(255)), highPriority=False)
 
     def RefreshAllSceneActuatorConfigurations(self):
         # append 0 to set current scene at very end
-        self.BatchCommandSubmitFilteredSlow(
-            ch.SceneActuatorConfiguration(list(range(1, 256)) + [0]))
+        self.BatchCommandSubmitFiltered(ch.SceneActuatorConfiguration(list(range(1, 256)) + [0]), highPriority=False)
 
     def RefreshAllParameters(self):
         logging.warning("[%d] RefreshAllParameter", self.n)
-        self.BatchCommandSubmitFilteredSlow(
-            ch.ParameterQueries(range(255)))
+        self.BatchCommandSubmitFiltered(ch.ParameterQueries(range(255)), highPriority=False)
 
     def RefreshDynamicValues(self):
         logging.warning("[%d] RefreshDynamic", self.n)
-        c = (ch.DYNAMIC_PROPERTY_QUERIES +
-             ch.SensorMultiLevelQueries(self.values.SensorSupported()) +
-             ch.MeterQueries(self.values.MeterSupported()) +
-             ch.ColorQueries(self.values.ColorSwitchSupported()))
-        self.BatchCommandSubmitFilteredSlow(c)
+        c = (ch.DYNAMIC_PROPERTY_QUERIES + ch.SensorMultiLevelQueries(self.values.SensorSupported()) +
+             ch.MeterQueries(self.values.MeterSupported()) + ch.ColorQueries(self.values.ColorSwitchSupported()))
+        self.BatchCommandSubmitFiltered(c, highPriority=False)
 
     def RefreshStaticValues(self):
         logging.warning("[%d] RefreshStatic", self.n)
-        c = (ch.STATIC_PROPERTY_QUERIES +
-             ch.CommandVersionQueries(self.values.Classes()) +
-             ch.STATIC_PROPERTY_QUERIES_LAST)
-        self.BatchCommandSubmitFilteredSlow(c)
+        c = (ch.STATIC_PROPERTY_QUERIES + ch.CommandVersionQueries(self.values.Classes()) + ch.STATIC_PROPERTY_QUERIES_LAST)
+        self.BatchCommandSubmitFiltered(c, highPriority=False)
 
     def RefreshSemiStaticValues(self):
         logging.warning("[%d] RefreshSemiStatic", self.n)
-        c = (ch.AssociationQueries(self.values.AssociationGroupIds()) +
-             ch.MultiChannelEndpointQueries(self.values.MultiChannelEndPointIds()))
-        self.BatchCommandSubmitFilteredSlow(c)
+        c = (ch.AssociationQueries(self.values.AssociationGroupIds()) + ch.MultiChannelEndpointQueries(self.values.MultiChannelEndPointIds()))
+        self.BatchCommandSubmitFiltered(c, highPriority=False)
 
     def SmartRefresh(self):
-        if self.state == NODE_STATE_NONE:
-            return
-        elif self.state == NODE_STATE_DISCOVERED:
-            self.RefreshStaticValues()
+        if   self.state == NODE_STATE_NONE: return
+        elif self.state == NODE_STATE_DISCOVERED: self.RefreshStaticValues()
         elif self.state == NODE_STATE_INTERVIEWED:
             self.RefreshSemiStaticValues()
             self.RefreshDynamicValues()
@@ -513,14 +573,13 @@ class Node:
         # TODO: using a fixed nonce is a total hack - fix this
         args = {"seq": seq, "mode": 1, "nonce": [0] * 16}
         logging.warning("Sending Nonce: %s", str(args))
-        self.BatchCommandSubmitFilteredFast([(z.Security2_NonceReport, args)])
+        self.BatchCommandSubmitFiltered([(z.Security2_NonceReport, args)])
 
     def MaybeChangeState(self, new_state: str):
         old_state = self.state
-        if old_state >= new_state:
-            return
-        logging.warning("[%s] state transition %s -- %s",
-                        self.Name(), old_state, new_state)
+        if old_state >= new_state: return
+
+        logging.warning("[%s] state transition %s -- %s", self.getName(), old_state, new_state)
         self.state = new_state
 
         if new_state == NODE_STATE_DISCOVERED:
@@ -528,12 +587,10 @@ class Node:
             #    self.BatchCommandSubmitFilteredFast(
             #            [(z.MultiChannel_Get, {})])
             if old_state < NODE_STATE_DISCOVERED:
-                if self.secure_pair and (self.values.HasCommandClass(z.Security) or
-                                         self.values.HasCommandClass(z.Security2)):
+                if self.secure_pair and (self.values.HasCommandClass(z.Security) or self.values.HasCommandClass(z.Security2)):
                     self.state = NODE_STATE_KEX_GET
                     logging.error("[%d] Sending KEX_GET", self.n)
-                    self.BatchCommandSubmitFilteredFast(
-                        [(z.Security2_KexGet, {})])
+                    self.BatchCommandSubmitFiltered([(z.Security2_KexGet, {})])
                 else:
                     self.RefreshStaticValues()
         elif new_state == NODE_STATE_KEX_REPORT:
@@ -541,63 +598,62 @@ class Node:
             # we currently only support S2 Unauthenticated Class
             assert v["keys"] & 1 == 1
             logging.error("[%d] Sending KEX_SET", self.n)
-            args = {'mode': 0, 'schemes': 2,
-                    'profiles': 1, 'keys': v["keys"] & 1}
-            self.BatchCommandSubmitFilteredFast([(z.Security2_KexSet, args)])
+            args = {'mode': 0, 'schemes': 2, 'profiles': 1, 'keys': v["keys"] & 1}
+            self.BatchCommandSubmitFiltered([(z.Security2_KexSet, args)])
             self.state = NODE_STATE_KEX_SET
         elif new_state == NODE_STATE_PUBLIC_KEY_REPORT_OTHER:
             v = self.values.Get(z.Security2_PublicKeyReport)
             other_public_key = bytes(v["key"])
-            self._tmp_key_ccm, self._tmp_personalization_string, this_public_key = security.CKFD_SharedKey(
-                other_public_key)
+            self._tmp_key_ccm, self._tmp_personalization_string, this_public_key = security.CKFD_SharedKey(other_public_key)
 
-            print("@@@@@@", len(self._tmp_key_ccm), self._tmp_key_ccm,
-                  len(self._tmp_personalization_string), self._tmp_personalization_string)
+            print("@@@@@@", len(self._tmp_key_ccm), self._tmp_key_ccm, len(self._tmp_personalization_string), self._tmp_personalization_string)
             args = {"mode": 1, "key": [int(x) for x in this_public_key]}
-            self.BatchCommandSubmitFilteredFast(
-                [(z.Security2_PublicKeyReport, args)])
+            self.BatchCommandSubmitFiltered([(z.Security2_PublicKeyReport, args)])
             self.state = NODE_STATE_PUBLIC_KEY_REPORT_SELF
 
         elif new_state == NODE_STATE_INTERVIEWED:
             self.RefreshDynamicValues()
             self.RefreshSemiStaticValues()
 
-    def put(self, ts: float, key: tuple, values: Mapping):
-        """A Node receives new commands via this function"""
-        self.last_contact = ts
 
-        if key == command.CUSTOM_COMMAND_APPLICATION_UPDATE:
-            # maybe update generic+specific device
-            if self.values.Get(command.CUSTOM_COMMAND_PROTOCOL_INFO) is None:
-                self.values.Set(ts, command.CUSTOM_COMMAND_PROTOCOL_INFO,
-                                {"device_type": (0, values["generic"], values["specific"])})
-            k = values["generic"] * 256 + values["specific"]
-            v = z.GENERIC_SPECIFIC_DB.get(k)
-            if v is None:
-                logging.error("[%d] unknown generic device : %s",
-                              self.n, repr(values))
-                return
-            self.InitializeUnversioned(
-                values["commands"], values["controls"], v[1], v[2])
-            self.MaybeChangeState(NODE_STATE_DISCOVERED)
-            if self.state >= NODE_STATE_INTERVIEWED:
-                self.RefreshDynamicValues()
-                self.RefreshSemiStaticValues()
+    def handleApplicationUpdate(self, values):
+        # Must be z.UPDATE_STATE_NODE_INFO_RECEIVED: the node is awake now and/or has changed values
+
+        # maybe update generic+specific device
+        if self.values.Get(command.CUSTOM_COMMAND_PROTOCOL_INFO) is None:
+            self.values.Set(command.CUSTOM_COMMAND_PROTOCOL_INFO, {"device_type": (0, values["generic"], values["specific"])})
+
+        v = z.GENERIC_SPECIFIC_DB.get((values["generic"] << 8) + values["specific"])
+        if v is None:
+            logging.error("[%d] unknown generic device : %s", self.n, repr(values))
             return
 
-        if self.state < NODE_STATE_DISCOVERED and not command.IsCustom(key):
-            self._translator.Ping(self.n, 3, "undiscovered")
+        self.InitializeUnversioned(values["commands"], values["controls"], v[1], v[2])
+        self.MaybeChangeState(NODE_STATE_DISCOVERED)
+        if self.state >= NODE_STATE_INTERVIEWED:
+            self.RefreshDynamicValues()
+            self.RefreshSemiStaticValues()
 
-        items_extractor = _COMMANDS_WITH_MAP_VALUES.get(key)
+
+    def put(self, nodeCommand:NodeCommand):
+        """A Node receives new commands via this function"""
+        self.last_contact = time.time()
+
+        if self.state < NODE_STATE_DISCOVERED: self.Ping(3, "undiscovered")
+
+        items_extractor = _COMMANDS_WITH_MAP_VALUES.get(nodeCommand.command)
         if items_extractor:
-            for k, v in items_extractor(values):
-                self.values.SetMapEntry(ts, key, k, v)
+            for k, v in items_extractor(nodeCommand.commandValues):
+                self.values.SetMapEntry(nodeCommand.command, k, v)
         else:
-            self.values.Set(ts, key, values)
+            self.values.Set(nodeCommand.command, nodeCommand.commandValues)
 
-        special = _COMMANDS_WITH_SPECIAL_ACTIONS.get(key)
+        special = _COMMANDS_WITH_SPECIAL_ACTIONS.get(nodeCommand.command)
         if special:
-            special(ts, self, values)
+            special(self, nodeCommand.commandValues)
+
+        super().put(nodeCommand)
+
 
         # elif a == command.ACTION_STORE_SCENE:
         #    if value[0] == 0:
@@ -616,7 +672,35 @@ class Node:
         #        self.SecurityRequestClasses()
 
 
-class Nodeset(object):
+class Endpoint(NetworkElement):
+    def __init__(self, node:Node, endpoint, name=None):
+        super().__init__(name)
+        self.node = node
+        self.endpoint = endpoint
+
+
+    def getName(self):
+        id = "%d.%d" % (self.node.n, self.endpoint)
+        if self.name is None and self.node.name is None: return id
+        return self.name if self.name is not Node else self.node.name + " (" + id + ")"
+
+
+    def SendCommand(self, nodeCommand:NodeCommand, highPriority=True, txOptions:tuple=None):
+        nodeCommand.endPoint = self.endpoint
+        self.node.SendCommand(nodeCommand, highPriority, txOptions)
+
+
+    def Ping(self, retries, reason):
+        logging.info("===: Ping (node: %s): reason %s, retries %d", self.getName(), reason, retries)
+
+        self.SendCommand(NodeCommand(z.MultiChannel_CapabilityGet, {"endpoint": self.endpoint})) #FIXME: does a ping on endpoint make sense?
+
+
+    def put(self, nodeCommand):
+        super().put(nodeCommand)
+
+
+class Nodeset:
     """NodeSet represents the collection of all nodes in the network.
 
     It handles incoming commands from the CommandTranslators and dispatches
@@ -626,23 +710,82 @@ class Nodeset(object):
     CommandTranslator.
     """
 
-    def __init__(self, translator: CommandTranslator, controller_n):
+    def __init__(self, driver:Driver, controller_n):
         self._controller_n = controller_n
-        self._translator = translator
-        self.nodes: Mapping[int, Node] = {}
-        translator.AddListener(self)
+        self.driver = driver
+        self.nodes = {}
+        self.endpoints = {}
+        self.driver.addListener(self)
 
-    def DropNode(self, n: int):
-        del self.nodes[n]
-
-    def GetNode(self, n: int) -> Node:
+    def getNode(self, n: int) -> Node:
         node = self.nodes.get(n)
         if node is None:
-            node = Node(n, self._translator, n == self._controller_n)
+            node = Node(n, self.driver, is_controller=n==self._controller_n)
             self.nodes[n] = node
         return node
 
-    def put(self, n: int, ts: float, key: tuple, values: Mapping):
-        """NodeSet receives commands via this function"""
-        node = self.GetNode(n)
-        node.put(ts, key, values)
+    def getEndpoint(self, nodeId:int, endpointId:int) -> Endpoint:
+        index = (nodeId << 8) + endpointId
+        endpoint = self.endpoints.get(index)
+        if endpoint is None:
+            endpoint = Endpoint(self.getNode(nodeId), endpointId)
+            self.endpoints[index] = endpoint
+        return endpoint
+
+    def getNetworkElement(self, id) -> NetworkElement:
+        if type(id) == tuple: return self.getEndpoint(id[0], id[1])
+        return self.getNode(id)
+
+
+    def put(self, serialCommand, serialCommandParameters):
+        if serialCommand == z.API_APPLICATION_COMMAND_HANDLER:
+            srcNode, nodeCommand = serialCommandParameters
+            if nodeCommand.command == z.MultiChannel_CmdEncap:
+                self.getEndpoint(srcNode, nodeCommand.commandValues['src']).put(nodeCommand.endpointCommand)
+                return
+
+            if nodeCommand.command == z.MultiChannel_CapabilityReport:
+                # FIXME - can we do this more elegantly?
+                nodeCommand.commandValues["commands"] = nodeCommand.commandValues["classes"]
+                nodeCommand.commandValues["controls"] = []
+
+                self.getEndpoint(srcNode, nodeCommand.commandValues['endpoint']).put(nodeCommand)
+                return
+
+            self.getNode(srcNode).put(nodeCommand)
+
+        elif serialCommand == z.API_ZW_APPLICATION_UPDATE:
+            if serialCommandParameters[0] == z.UPDATE_STATE_NODE_INFO_REQ_FAILED:
+                if serialCommandParameters[1] != 0:
+                    logging.error("XXX: Application update request failed")
+
+            elif serialCommandParameters[0] == z.UPDATE_STATE_SUC_ID:
+                logging.warning("===: Application updated: succ id updated: needs work")
+
+            elif serialCommandParameters[0] == z.UPDATE_STATE_NODE_INFO_RECEIVED:
+                # the node is awake now and/or has changed values
+                srcNode = serialCommandParameters[1]
+                length = serialCommandParameters[2]
+                data = serialCommandParameters[3: 3 + length]
+                commands = []
+                controls = []
+                seen_marker = False
+                for i in data[3:]:
+                    if i == z.Mark: seen_marker = True
+                    elif seen_marker: controls.append(i)
+                    else: commands.append(i)
+
+                values = {
+                    "basic": data[0],
+                    "generic": data[1],
+                    "specific": data[2],
+                    "commands": commands,
+                    "controls": controls,
+                }
+                self.getNode(srcNode).handleApplicationUpdate(values)  # FIXME: do we need to reintroduce timestamp
+
+            else:
+                logging.error("XXX: Application update: unknown type (%x) - ignore", serialCommandParameters[0])
+
+        else:
+            logging.error("XXX: unhandled message - ignore: %s %s", command, serialCommandParameters)

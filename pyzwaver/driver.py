@@ -28,9 +28,7 @@ import time
 
 from pyzwaver.serial_frame import *
 from pyzwaver.transaction import Transaction
-from pyzwaver.command import NodeCommand
 from pyzwaver import zwave as z
-
 
 
 class MessageQueueOut:
@@ -38,14 +36,10 @@ class MessageQueueOut:
     MessageQueue for outbound messages. Tries to support
     priorities and fairness.
     """
-    LOWEST_PRIORITY     = (1000, 0, -1)
-    CONTROLLER_PRIORITY = (   1, 0, -1)
-
-    @staticmethod
-    def NodePriorityHi(node: int) -> tuple: return 2, 0, node
-    @staticmethod
-    def NodePriorityLo(node: int) -> tuple: return 3, 0, node
-
+    PRIO_HIGHEST = 1
+    PRIO_HIGH    = 2
+    PRIO_LOW     = 3
+    PRIO_LOWEST  = 1000
 
     def __init__(self):
         self._q = queue.PriorityQueue()
@@ -54,44 +48,31 @@ class MessageQueueOut:
         self._lo_min = 0
         self._hi_min = 0
         self._counter = 0
-        self._per_node_size = collections.defaultdict(int)
 
-    def qsize(self):
-        return self._q.qsize()
-
-    def qsize_for_node(self, n):
-        return self._per_node_size[n]
-
-    def put(self, priority, queueObject):
+    def put(self, prio, queueObject, q=-1):
         if self._q.empty():
             self._lo_counts = collections.defaultdict(int)
             self._hi_counts = collections.defaultdict(int)
             self._lo_min = 0
             self._hi_min = 0
 
-        level, count, node = priority
-        if level == 2:
-            count = self._hi_counts[node]
-            count = max(count + 1, self._hi_min)
-            self._hi_counts[node] = count
-        elif level == 3:
-            count = self._lo_counts[node]
-            count = max(count + 1, self._lo_min)
-            self._lo_counts[node] = count
+        if prio == self.PRIO_HIGH:
+            count = max(self._hi_counts[q] + 1, self._hi_min)
+            self._hi_counts[q] = count
+        elif prio == self.PRIO_LOW:
+            count = max(self._lo_counts[q] + 1, self._lo_min)
+            self._lo_counts[q] = count
         else:
             count = self._counter
             self._counter += 1
-        self._per_node_size[node] += 1
-        self._q.put(((level, count, node), queueObject))
+
+        self._q.put(((prio, count, q), queueObject))
 
     def get(self):
         priority, message = self._q.get()
-        level = priority[0]
-        if level == 2:
-            self._hi_min = priority[1]
-        elif level == 2: # FIXME: makes no sense
-            self._lo_min = priority[1]
-        self._per_node_size[priority[2]] -= 1
+        prio, count, _ = priority
+        if   prio == self.PRIO_HIGH: self._hi_min = count
+        elif prio == self.PRIO_LOW: self._lo_min = count
         return message
 
 
@@ -103,7 +84,10 @@ class Driver(object):
     device.
 
     The Driver object encapsulates all transmission related
-    logic, i.e., confirmation, timeouts, queueing, etc
+    logic, i.e., confirmation, timeouts, queueing, etc.
+
+    It only understands serial requests. Higher-level node
+    commands are handled elsewhere
     """
 
     TERMINATE = 0xFFFF
@@ -157,18 +141,21 @@ class Driver(object):
         self.newRequestProcessingThread = threading.Thread(target=self.NewRequestProcessingThread, name="NewRequestProcessingThread")
         self.newRequestProcessingThread.start()
 
+
     def addListener(self, l):
         self.listeners.append(l)
 
-    def sendNodeCommand(self, nodes, nodeCommand:tuple, nodeCommandValues:dict, priority:tuple, txOptions:tuple=SendDataFrame.standardTX, callback=None):
-        nodes = nodes if isinstance(nodes, list) else [nodes]
-        endpoint = nodes[0] & 0xff if len(nodes) == 1 and nodes[0] > 255 else None
-        dataFrame = SendDataFrame(nodes, NodeCommand(nodeCommand, nodeCommandValues, endpoint), txOptions)
-        self.newRequestQueue.put(priority, (dataFrame, 5.0, callback)) #FIXME: timeout
 
-    def sendRequest(self, command, commandParameters=None, priority=MessageQueueOut.LOWEST_PRIORITY, timeout=0.0, callback=None):
+    RequestPriority = Enum("Priority", {"HIGHEST": MessageQueueOut.PRIO_HIGHEST, "HIGH_FAIR": MessageQueueOut.PRIO_HIGH, \
+                                        "LOW_FAIR": MessageQueueOut.PRIO_LOW, "LOWEST": MessageQueueOut.PRIO_LOWEST})
+
+    def sendRequest(self, command, commandParameters=None, requestPriority=RequestPriority.LOWEST, timeout=0.0, callback=None):
+        priority, q = requestPriority, -1
+        if type(requestPriority) == tuple: priority, q = requestPriority
+
         dataFrame = CallbackRequest(command, commandParameters) if Transaction.hasRequests(command) else DataFrame(command, commandParameters)
-        self.newRequestQueue.put(priority, (dataFrame, timeout, callback))
+        self.newRequestQueue.put(priority.value, (dataFrame, timeout, callback), q)
+
 
     # Shut down all threads and hence Driver object
     def terminate(self):
@@ -177,9 +164,10 @@ class Driver(object):
 
         # send listeners signal to shutdown
         self.callBackQueue.put((self.TERMINATE, None))
-        self.newRequestQueue.put(MessageQueueOut.LOWEST_PRIORITY, (self.TERMINATE, None, 0, None))
+        self.newRequestQueue.put(MessageQueueOut.PRIO_HIGHEST, (None, 0, None))
 
         logging.info("Driver terminated")
+
 
     def writeToDevice(self, dataFrame: SerialFrame):
         with self.writeLock:
@@ -187,6 +175,7 @@ class Driver(object):
             logging.debug(">>>: [ %s ]", " ".join(["%02x" % i for i in dataFrame.toDeviceData()]))
             self.device.write(dataFrame.toDeviceData())
             self.device.flush()
+
 
     # This will handle retransmission of requests if we do not receive an ACK,
     # mostly due to timeouts (called by the Timer object attached to ongoingTransaction),
@@ -218,6 +207,7 @@ class Driver(object):
             self.confirmationTimeoutThread.start()
             self.ongoingTransaction.retransmissions += 1
 
+
     # This will cancel a transaction if it times out (called by Timer object attached to
     # each transaction). Any responses/requests related to this transcation received after
     # cancellation are ignored
@@ -234,12 +224,13 @@ class Driver(object):
                 self.ongoingTransaction = None
                 self.transactionClearedEvent.set()
 
+
     # This Thread manages a queue of new Transactions to be send. It is triggered by the
     # transactionClearedEvent (previous live Transaction finished) and transmits the next one
     def NewRequestProcessingThread(self):
         while not self._terminate:
             dataFrame, timeout, callback = self.newRequestQueue.get()
-            if dataFrame.serialCommand == self.TERMINATE: break
+            if dataFrame is None: break
 
             with self.transactionLock:
                 self.transactionClearedEvent.clear()
@@ -257,6 +248,7 @@ class Driver(object):
             self.transactionClearedEvent.wait()
 
         logging.info("NewRequestProcessingThread terminated")
+
 
     # This Thread processes all incoming communication from the ZWave device. It manages all
     # transmission logic (timeouts, sending confirmations, retransmissions) and hands over
@@ -415,6 +407,7 @@ class Driver(object):
                         continue
 
         logging.info("DeviceProcessingThread terminated")
+
 
     # This Thread distributes incoming commands (APPLICATION_COMMAND_HANDLER, APPLICATION_UPDATE) not
     # related to a live transaction to registered listeners (command_translator) for asynchronous processing
