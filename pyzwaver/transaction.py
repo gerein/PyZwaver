@@ -19,7 +19,7 @@ from enum import Enum
 import logging
 
 from pyzwaver import zwave as z
-from pyzwaver.serial_frame import DataFrame
+from pyzwaver.command import SerialRequest
 
 
 COMMAND_RES_REQ_MULTIREQ = {
@@ -63,8 +63,8 @@ class Transaction:
 
     CallbackReason = Enum('CallbackReason', 'REQUEST_SENT RESPONSE_RECEIVED REQUEST_RECEIVED TIMED_OUT')
 
-    def __init__(self, dataFrame:DataFrame, callback=None):
-        self.request = dataFrame
+    def __init__(self, serialRequest:SerialRequest, callback=None):
+        self.serialRequest = serialRequest
         self.callback = callback
         self.status = self.TransactionStatus.CREATED
 
@@ -74,7 +74,7 @@ class Transaction:
 
     def start(self):
         self.status = self.TransactionStatus.WAIT_FOR_CONFIRMATION
-        logging.info("==>: Transaction started %s", self.request.toString())
+        logging.info("==>: Transaction started %s", self.serialRequest.toString())
 
     @staticmethod
     def hasRequests(serialCommand):
@@ -88,46 +88,48 @@ class Transaction:
     def processACK(self):
         if self.status != self.TransactionStatus.WAIT_FOR_CONFIRMATION: return False
 
-        if COMMAND_RES_REQ_MULTIREQ[self.request.serialCommand][0]:
+        if COMMAND_RES_REQ_MULTIREQ[self.serialRequest.serialCommand][0]:
             self.status = self.TransactionStatus.WAIT_FOR_RESPONSE
         else:
             self.status = self.TransactionStatus.COMPLETED
-            logging.info("<==: Transaction completed %s", self.request.toString())
-            if self.callback: self.callback(self.CallbackReason.REQUEST_SENT, [])
+            logging.info("<==: Transaction completed %s", self.serialRequest.toString())
+            if self.callback: self.callback(self.CallbackReason.REQUEST_SENT, None)
 
         return True
 
-    def processResponse(self, response:DataFrame):
+    def processResponse(self, response:SerialRequest):
         if self.status != self.TransactionStatus.WAIT_FOR_RESPONSE: return False
+        if self.serialRequest.serialCommand != response.serialCommand: return False
 
-        if COMMAND_RES_REQ_MULTIREQ[self.request.serialCommand][1]:
+        if COMMAND_RES_REQ_MULTIREQ[self.serialRequest.serialCommand][1]:
             self.status = self.TransactionStatus.WAIT_FOR_REQUEST
         else:
             self.status = self.TransactionStatus.COMPLETED
-            logging.info("<==: Transaction completed %s", self.request.toString())
+            logging.info("<==: Transaction completed %s", self.serialRequest.toString())
 
-        if self.callback: self.callback(self.CallbackReason.RESPONSE_RECEIVED, response.serialCommandParameters)   # FIXME: make asynchronous
+        if self.callback: self.callback(self.CallbackReason.RESPONSE_RECEIVED, response.serialCommandValues)
 
         return True
 
-    def processRequest(self, request):
+    def processRequest(self, request:SerialRequest):
         if self.status != self.TransactionStatus.WAIT_FOR_REQUEST: return False
-        if not self.hasRequests(self.request.serialCommand): return False
+        if self.serialRequest.serialCommand != request.serialCommand: return False
 
-        if self.request.callbackId != request.callbackId: return False
+        if not self.hasRequests(self.serialRequest.serialCommand): return False
+        if self.serialRequest.serialCommandValues["callback"] != request.serialCommandValues.get("callback"): return False
 
         more = False
         if self.callback:
-            more = self.callback(self.CallbackReason.REQUEST_RECEIVED, request.commandParameters)
-            more = more and COMMAND_RES_REQ_MULTIREQ[self.request.serialCommand][2]
+            more = self.callback(self.CallbackReason.REQUEST_RECEIVED, request.serialCommandValues)
+            more = more and COMMAND_RES_REQ_MULTIREQ[self.serialRequest.serialCommand][2]
 
         if not more:
             self.status = self.TransactionStatus.COMPLETED
-            logging.info("<==: Transaction completed %s", self.request.toString())
+            logging.info("<==: Transaction completed %s", self.serialRequest.toString())
 
         return True
 
     def processTimeout(self):
         self.status = Transaction.TransactionStatus.TIMED_OUT
-        logging.error("XXX: Transaction timed out: %s", self.request.toString())
+        logging.error("XXX: Transaction timed out: %s", self.serialRequest.toString())
         if self.callback: self.callback(self.CallbackReason.TIMED_OUT, None)

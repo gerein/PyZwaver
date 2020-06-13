@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 # Copyright 2016 Robert Muth <robert@muth.org>
+# Copyright 2020 Gerein
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -46,15 +47,9 @@ def IsCustom(key):
 
 
 def StringifyCommand(key):
-    s = _CUSTOM_COMMAND_STRINGS.get(key)
-    if s: return s
-    s = z.SUBCMD_TO_STRING.get(key[0] * 256 + key[1])
-    if s: return s
+    if key in _CUSTOM_COMMAND_STRINGS: return _CUSTOM_COMMAND_STRINGS[key]
+    if (key[0] << 8) + key[1] in z.SUBCMD_TO_STRING: return z.SUBCMD_TO_STRING[(key[0] << 8) + key[1]]
     return "Unknown:%02x:%02x" % (key[0], key[1])
-
-
-def StringifyCommandClass(cls):
-    return z.CMD_TO_STRING.get(cls, "UNKNOWN:%d" % cls)
 
 
 def NodeDescription(basic_generic_specific):
@@ -66,402 +61,6 @@ def NodeDescription(basic_generic_specific):
     return v[0]
 
 
-# ======================================================================
-# Parse Helpers
-# ======================================================================
-def _GetSignedValue(data):
-    return int.from_bytes(data, 'big', signed=True)
-
-
-def _SetSignedValue(value):
-    mag = value if (value >= 0) else (-value-1)
-
-    if mag <= 0x7F:
-        length = 1
-    elif mag <= 0x7FFF:
-        length = 2
-    elif mag <= 0x7FFFFFFF:
-        length = 4
-    else:
-        raise ValueError(
-            "{:} won't fit in 4-byte two's complement".format(value))
-    return list(value.to_bytes(length, 'big', signed=True))
-
-
-def _GetReading(m, index, units_extra):
-    c = m[index]
-    size = c & 0x7
-    units = (c & 0x18) >> 3 | units_extra
-    exp = (c & 0xe0) >> 5
-    mantissa = m[index + 1: index + 1 + size]
-    value = _GetSignedValue(mantissa) / pow(10, exp)
-    return index + 1 + size, units, mantissa, exp, value
-
-
-def _GetTimeDelta(m, index):
-    return index + 2, m[index] * 256 + m[index + 1]
-
-
-def _ParseMeter(m, index):
-    if index + 2 > len(m):
-        raise ValueError("cannot parse value")
-    c1 = m[index]
-    unit_extra = (c1 & 0x80) >> 7
-
-    kind = c1 & 0x1f
-    rate = (c1 & 0x60) >> 5
-    c2 = m[index + 1]
-    size = c2 & 0x7
-    unit = (c2 & 0x18) >> 3 | unit_extra << 2
-    exp = (c2 & 0xe0) >> 5
-    index += 2
-    out = {
-        "type": kind,
-        "unit": unit,
-        "exp": exp,
-        "rate": rate,
-    }
-    if index + size > len(m):
-        raise ValueError("cannot parse value")
-    mantissa = m[index: index + size]
-    index += size
-    value = _GetSignedValue(mantissa) / pow(10, exp)
-    out["mantissa"], out["_value"] = mantissa, value
-    if index + 2 <= len(m):
-        # TODO: provide non-raw version of this
-        index, out["dt"] = _GetTimeDelta(m, index)
-    n = 2
-    if index + size <= len(m):
-        mantissa = m[index: index + size]
-        value = _GetSignedValue(mantissa) / pow(10, out["exp"])
-        out["mantissa%d" % n], out["_value%d" % n] = mantissa, value
-        index += size
-        n += 1
-    return index, out
-
-
-def _ParseByte(m, index):
-    if len(m) <= index:
-        raise ValueError("cannot parse byte")
-    return index + 1, m[index]
-
-
-def _ParseOptionalByte(m, index):
-    if len(m) <= index:
-        return index, None
-    return index + 1, m[index]
-
-
-def _ParseWord(m, index):
-    if len(m) <= index + 1:
-        raise ValueError("cannot parse word")
-    return index + 2, m[index] * 256 + m[index + 1]
-
-
-ENCODING_TO_DECODER = [
-    "ascii",
-    "latin1",  # "cp437" ,
-    "utf-16-be",
-]
-
-
-def DecodeName(m):
-    encoding = m[0] & 3
-    return bytes(m[1:]).decode(ENCODING_TO_DECODER[encoding])
-
-
-def _ParseName(m, index):
-    assert len(m) > index
-    return len(m), m[index:]
-
-
-def _ParseStringWithLength(m, index):
-    size = m[index]
-    return 1 + size + index, bytes(m[index + 1: index + 1 + size])
-
-
-def _ParseStringWithLengthAndEncoding(m, index):
-    encoding = m[index] >> 5
-    size = m[index] & 0x1f
-    return 1 + size, {"encoding": encoding, "text": m[index + 1:index + 1 + size]}
-
-
-def _ParseListRest(m, index):
-    size = len(m) - index
-    return index + size, m[index:index + size]
-
-
-def _ParseGroups(m, index):
-    if (len(m) - index) % 7 != 0:
-        raise ValueError("malformed groups section: %d" % len(m))
-    groups = []
-    while index < len(m):
-        num = m[index + 0]
-        profile = m[index + 2] * 256 + m[index + 3]
-        event = m[index + 5] * 256 + m[index + 6]
-        groups.append((num, profile, event))
-        index += 7
-    return index, groups
-
-
-def _ParseNonce(m, index):
-    size = 8
-    if len(m) < index + size:
-        raise ValueError("malformed nonce:")
-    return index + size, m[index:index + size]
-
-
-def _GetIntLittleEndian(m):
-    x = 0
-    shift = 0
-    for i in m:
-        x += i << shift
-        shift += 8
-    return x
-
-
-def _GetIntBigEndian(m):
-    x = 0
-    for i in m:
-        x <<= 8
-        x += i
-    return x
-
-
-def _ParseRestLittleEndianInt(m, index):
-    size = len(m) - index
-    return index + size, {"size": size, "value": _GetIntLittleEndian(m[index:index + size])}
-
-
-def _ParseSizedLittleEndianInt(m, index):
-    size = m[index]
-    index += 1
-    return index + size, {"size": size, "value": _GetIntLittleEndian(m[index:index + size])}
-
-
-def _ParseOptionalTarget(m, index):
-    # we need at least two bytes
-    if len(m) <= index:
-        return index, None
-    n = m[index]
-    index += 1
-    if len(m) < index + 2 * n:
-        raise ValueError("not enough bytes for target")
-    out = []
-    for _ in range(n):
-        out.append(m[index] * 256 + m[index + 1])
-        index += 2
-    return index, out
-
-
-def _ParseSensor(m, index):
-    # we need at least two bytes
-    if len(m) < index + 2:
-        raise ValueError("malformed sensor string")
-
-    c = m[index]
-    precision = (c >> 5) & 7
-    unit = (c >> 3) & 3
-    size = c & 7
-    if size not in (1, 2, 4):
-        raise ValueError("strange size field: %d" % size)
-
-    if len(m) < index + 1 + size:
-        raise ValueError("malformed sensor string precision:%d unit:%d size:%d" %
-                         (precision, unit, size))
-    mantissa = m[index + 1: index + 1 + size]
-    value = _GetSignedValue(mantissa) / pow(10, precision)
-    return index + 1 + size, {"exp": precision, "unit": unit, "mantissa": mantissa,
-                              "_value": value}
-
-
-def _ParseValue(m, index):
-    size = m[index] & 0x7
-    start = index + 1
-    return index + 1 + size, {"size": size, "value": _GetIntBigEndian(m[start:start + size])}
-
-
-def _ParseDate(m, index):
-    if len(m) < index + 7:
-        raise ValueError("malformed time data")
-
-    year = m[index] * 256 + m[index + 1]
-    month = m[index + 2]
-    day = m[index + 3]
-    hours = m[index + 4]
-    mins = m[index + 5]
-    secs = m[index + 6]
-    return index + 7, [year, month, day, hours, mins, secs]
-
-
-def _ParseExtensions(m, index):
-    mode = m[index]
-    index += 1
-    extensions = []
-    unencrypted = [mode]
-    has_unencypted_extension = (mode & 1) != 0
-    while has_unencypted_extension:
-        size = m[index]
-        kind = m[index + 1]
-        data = m[index + 2: index + size]
-        unencrypted += m[index: index + size]
-        index += size
-        extensions.append((kind, data))
-        has_unencypted_extension = (kind & 128) != 0
-    return len(m), {"mode": mode, "extensions": extensions, "ciphertext": m[index:],
-                    "_plaintext": unencrypted, "_message_size": len(m)}
-
-
-# ======================================================================
-# Assemble Helpers
-# ======================================================================
-
-def _MakeDate(date):
-    if len(date) != 6:
-        raise ValueError("bad date parameter of length %d" % len(date))
-    return [date[0] // 256, date[0] % 256, date[1], date[2], date[3], date[4], date[5]]
-
-
-def _MakeSensor(args):
-    if '_value' in args:
-        v = int(args['_value'] * pow(10, args['exp']))
-        m = _SetSignedValue(v)
-    else:
-        m = args["mantissa"]
-    c = args["exp"] << 5 | args["unit"] << 3 | len(m)
-    return [c] + m
-
-
-def _MakeMeter(args):
-    c1 = (args["unit"] & 4) << 7 | args["rate"] << 5 | (args["type"] & 0x1f)
-    c2 = args["exp"] << 5 | (args["unit"] & 3) << 3 | len(args["mantissa"])
-    delta = []
-    if "dt" in args:
-        dt = args["dt"]
-        delta = [dt >> 8, dt & 0xff]
-    return [c1, c2] + args["mantissa"] + delta + args.get("mantissa2", [])
-
-
-def _MakeByte(b):
-    return [b]
-
-
-def _MakeOptionalByte(b):
-    if b is None:
-        return []
-    return [b]
-
-
-def _MakeWord(w):
-    return [(w >> 8) & 0xff, w & 0xff]
-
-
-def _MakeName(n):
-    return n
-
-
-def _MakeList(lst):
-    return lst
-
-
-def _MakeNonce(lst):
-    if len(lst) != 8:
-        raise ValueError("bad nonce parameter of length %d" % len(lst))
-    return lst
-
-
-def _MakeValue(v):
-    size = v["size"]
-    value = v["value"]
-    out = [size]
-    for i in reversed(range(size)):
-        out.append((value >> 8 * i) & 0xff)
-    return out
-
-
-def _MakeString(v):
-    m = v["text"]
-    c = (v["encoding"] << 5) | len(m)
-    return [c] + m
-
-
-def _MakeStringWithLength(v):
-    return [len(v)] + [int(x) for x in v]
-
-
-def _MakeLittleEndianInt(v):
-    n = v["value"]
-    out = []
-    for _ in range(v["size"]):
-        out.append(n & 0xff)
-        n >>= 8
-    return out
-
-
-def _MakeSizedLittleEndianInt(v):
-    n = v["value"]
-    out = [v["size"]]
-    for _ in range(v["size"]):
-        out.append(n & 0xff)
-        n >>= 8
-    return out
-
-
-def _MakeOptionalTarget(v):
-    if v is None: return []
-    out = [len(v)]
-    for w in v:
-        out.append((w >> 8) & 255)
-        out.append(w & 255)
-    return out
-
-
-def _MakeGroups(v):
-    out = []
-    for num, profile, event in v:
-        out.append(num)
-        out.append(0)
-        out.append((profile >> 8) & 255)
-        out.append(profile & 255)
-        out.append(0)
-        out.append((event >> 8) & 255)
-        out.append(event & 255)
-    return out
-
-
-def _MakeExtensions(v):
-    out = [v["mode"]]
-    for kind, data in v["extensions"]:
-        out += [len(data) + 2, kind]
-        out += data
-    out += v["ciphertext"]
-    return out
-
-
-_OPTIONAL_COMPONENTS = {'b', 't'}
-
-# Whenever you augment this make sure there is a test case in
-# TestData/commands.input.txt
-_PARSE_ACTIONS = {
-    "A": (_ParseStringWithLength,    _MakeStringWithLength),
-    "B": (_ParseByte,                _MakeByte),
-    "C": (_ParseDate,                _MakeDate),
-    "E": (_ParseExtensions,          _MakeExtensions),
-    "F": (_ParseStringWithLengthAndEncoding, _MakeString),
-    "G": (_ParseGroups,              _MakeGroups),
-    "L": (_ParseListRest,            _MakeList),
-    "M": (_ParseMeter,               _MakeMeter),
-    "N": (_ParseName,                _MakeName),
-    "O": (_ParseNonce,               _MakeNonce),
-    "R": (_ParseRestLittleEndianInt, _MakeLittleEndianInt),  # as integer
-    # "T": _ParseSizedLittleEndianInt,
-    "V": (_ParseValue,               _MakeValue),
-    "W": (_ParseWord,                _MakeWord),
-    "X": (_ParseSensor,              _MakeSensor),
-    # Maybes
-    'b': (_ParseOptionalByte,        _MakeOptionalByte),
-    't': (_ParseOptionalTarget,      _MakeOptionalTarget)
-}
 
 class ParserAssembler:
 
@@ -637,62 +236,92 @@ def MaybePatchCommand(m):
     return m
 
 
+class SerialRequest:
+    CALLBACK_ID = 0
+
+    @staticmethod
+    def createCallbackId():
+        SerialRequest.CALLBACK_ID = (SerialRequest.CALLBACK_ID + 1) % 256
+        return SerialRequest.CALLBACK_ID
+
+    def __init__(self, serialCommand:int=None, serialCommandValues:dict=None):
+        if serialCommandValues is None: serialCommandValues = {}
+        self.serialCommand = serialCommand
+        self.serialCommandValues = serialCommandValues
+
+        formatTable = z.SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE.get(self.serialCommand)
+        if formatTable is not None and "B{callback}" in formatTable:
+            self.serialCommandValues["callback"] = SerialRequest.createCallbackId()
+
+    def parseData(self, data:list):
+        if len(data) < 2: return False
+        formatTable = z.SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE if data[0] == z.RESPONSE else z.SERIALCMD_TO_NODEREQUEST_PARSE_TABLE
+        self.serialCommand = data[1]
+        self.serialCommandValues = ParserAssembler(formatTable.get(self.serialCommand)).parse(data[2:])
+        return self.serialCommandValues is not None
+
+    @classmethod
+    def fromDeviceData(cls, data):
+        frame = SerialRequest()
+        return frame if frame.parseData(data) else None
+
+    def toDeviceData(self):
+        formatTable = z.SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE.get(self.serialCommand)
+        if formatTable is None: return None
+
+        serialCommandParameters = ParserAssembler(formatTable).assemble(self.serialCommandValues)
+        if serialCommandParameters is None: return None
+
+        return [self.serialCommand] + serialCommandParameters
+
+    def toString(self):
+        valuesString = ""
+        if self.serialCommandValues:
+            for value in self.serialCommandValues:
+                valuesString += ": " if valuesString == "" else ", "
+                if   value == "classes":  valuesString += "classes: [" + " ".join([z.CMD_TO_STRING[commandClass] for commandClass in self.serialCommandValues[value]]) + "]"
+                elif value == "command":  valuesString += "command: (" + (self.serialCommandValues["command"].toString() if self.serialCommandValues["command"] else "None") + ")"
+                else:                     valuesString += value + ": " + str(self.serialCommandValues[value])
+
+        return z.API_TO_STRING[self.serialCommand] + valuesString
+
+
+
 class NodeCommand:
 
-    def __init__(self, command:tuple, commandValues:dict=None, endpoint=None):
+    def __init__(self, command:tuple=None, commandValues:dict=None):
         if commandValues is None: commandValues = {}
         self.command = command
         self.commandValues = commandValues
-        self.endpoint = endpoint
-        self.endpointCommand = None
 
     def parseData(self, data):
         if len(data) < 2: return False
         self.command = (data[0], data[1])
-        nodeCommandParameters = data[2:]
-
-        table = z.SUBCMD_TO_PARSE_TABLE.get((self.command[0] << 8) + self.command[1])
-        if table is None: return False
-
-        self.commandValues = {}
-        index = 0
-        for t in table:
-            kind, name = t[0], t[2:-1]
-            try:    new_index, value = _PARSE_ACTIONS[kind][0](nodeCommandParameters, index)
-            except: return False
-            if value is None and kind not in _OPTIONAL_COMPONENTS: return False
-            self.commandValues[name] = value
-            index = new_index
-
-        if self.command == z.MultiChannel_CmdEncap:
-            self.endpoint = self.commandValues['src']
-            self.endpointCommand = NodeCommand.fromDeviceData(self.commandValues['command'])
-            return self.endpoint is not None
-
-        return True
+        formatTable = z.SUBCMD_TO_PARSE_TABLE.get((self.command[0] << 8) + self.command[1])
+        self.commandValues = ParserAssembler(formatTable).parse(data[2:])
+        return self.commandValues is not None
 
     @classmethod
     def fromDeviceData(cls, data):
-        frame = NodeCommand(())
+        frame = NodeCommand()
         return frame if frame.parseData(data) else None
 
     def toDeviceData(self):
-        table = z.SUBCMD_TO_PARSE_TABLE.get((self.command[0] << 8) + self.command[1])
-        if table is None: return None
+        formatTable = z.SUBCMD_TO_PARSE_TABLE.get((self.command[0] << 8) + self.command[1])
+        commandParameters = ParserAssembler(formatTable).assemble(self.commandValues)
+        if commandParameters is None:   # REMOVEME
+            print("XXX: nodeCommand not serializable: " + str(self.command) + ": " + str(self.commandValues))
 
-        commandParameters = []
-        for t in table:
-            kind, name = t[0], t[2:-1]
-            if name not in self.commandValues and kind not in _OPTIONAL_COMPONENTS: return None
+        if commandParameters is None: return None
 
-            try:    commandParameters += _PARSE_ACTIONS[kind][1](self.commandValues[name])
-            except: return None
-
-        command = list(self.command)
-        if self.endpoint is not None:
-            command = list(z.MultiChannel_CmdEncap) + [0, self.endpoint] + command
-
-        return command + commandParameters
+        return list(self.command) + commandParameters
 
     def toString(self):
-        return z.SUBCMD_TO_STRING[(self.command[0] << 8) + self.command[1]] + " " + str(self.commandValues)
+        valuesString = ""
+        if self.commandValues:
+            for value in self.commandValues:
+                valuesString += ": " if valuesString == "" else ", "
+                if value == "command":  valuesString += "command: (" + self.commandValues["command"].toString() + ")"
+                else:                   valuesString += value + ": " + str(self.commandValues[value])
+
+        return z.SUBCMD_TO_STRING[(self.command[0] << 8) + self.command[1]] + valuesString

@@ -72,7 +72,7 @@ class MessageQueueOut:
         priority, message = self._q.get()
         prio, count, _ = priority
         if   prio == self.PRIO_HIGH: self._hi_min = count
-        elif prio == self.PRIO_LOW: self._lo_min = count
+        elif prio == self.PRIO_LOW:  self._lo_min = count
         return message
 
 
@@ -89,8 +89,6 @@ class Driver(object):
     It only understands serial requests. Higher-level node
     commands are handled elsewhere
     """
-
-    TERMINATE = 0xFFFF
 
     @staticmethod
     def MakeSerialDevice(port="/dev/ttyUSB0"):
@@ -149,31 +147,34 @@ class Driver(object):
     RequestPriority = Enum("Priority", {"HIGHEST": MessageQueueOut.PRIO_HIGHEST, "HIGH_FAIR": MessageQueueOut.PRIO_HIGH, \
                                         "LOW_FAIR": MessageQueueOut.PRIO_LOW, "LOWEST": MessageQueueOut.PRIO_LOWEST})
 
-    def sendRequest(self, command, commandParameters=None, requestPriority=RequestPriority.LOWEST, timeout=0.0, callback=None):
+    def sendRequest(self, serialRequest:SerialRequest, requestPriority=RequestPriority.LOWEST, timeout=None, callback=None):
         priority, q = requestPriority, -1
         if type(requestPriority) == tuple: priority, q = requestPriority
 
-        dataFrame = CallbackRequest(command, commandParameters) if Transaction.hasRequests(command) else DataFrame(command, commandParameters)
-        self.newRequestQueue.put(priority.value, (dataFrame, timeout, callback), q)
+        if timeout is None:
+            # default transaction timeouts 2.0/2.5 seconds (depending if we're expecting requests back)
+            timeout = 2.5 if Transaction.hasRequests(serialRequest.serialCommand) else 2.0
+
+        self.newRequestQueue.put(priority.value, (serialRequest, timeout, callback), q)
 
 
     # Shut down all threads and hence Driver object
     def terminate(self):
+        logging.warning("Terminating driver")
+
         # DeviceProcessingThread is non-blocking and will shut down with this flag
         self._terminate = True
 
         # send listeners signal to shutdown
-        self.callBackQueue.put((self.TERMINATE, None))
+        self.callBackQueue.put(None)
         self.newRequestQueue.put(MessageQueueOut.PRIO_HIGHEST, (None, 0, None))
 
-        logging.info("Driver terminated")
 
-
-    def writeToDevice(self, dataFrame: SerialFrame):
+    def writeToDevice(self, serialFrame:SerialFrame):
         with self.writeLock:
-            logging.info(">>>: %s", dataFrame.toString())
-            logging.debug(">>>: [ %s ]", " ".join(["%02x" % i for i in dataFrame.toDeviceData()]))
-            self.device.write(dataFrame.toDeviceData())
+            logging.info(">>>: %s", serialFrame.toString())
+            logging.debug(">>>: [ %s ]", " ".join(["%02x" % i for i in serialFrame.toDeviceData()]))
+            self.device.write(serialFrame.toDeviceData())
             self.device.flush()
 
 
@@ -203,8 +204,9 @@ class Driver(object):
             logging.info("X>>: Retransmitting request for current transaction (retry %d)", self.ongoingTransaction.retransmissions + 1)
 
             self.confirmationTimeoutThread = threading.Timer(1.5, self.confirmationIssueHandler)
-            self.writeToDevice(self.ongoingTransaction.request)
+            self.writeToDevice(DataFrame(self.ongoingTransaction.serialRequest))
             self.confirmationTimeoutThread.start()
+
             self.ongoingTransaction.retransmissions += 1
 
 
@@ -229,8 +231,8 @@ class Driver(object):
     # transactionClearedEvent (previous live Transaction finished) and transmits the next one
     def NewRequestProcessingThread(self):
         while not self._terminate:
-            dataFrame, timeout, callback = self.newRequestQueue.get()
-            if dataFrame is None: break
+            serialRequest, timeout, callback = self.newRequestQueue.get()
+            if serialRequest is None: break
 
             with self.transactionLock:
                 self.transactionClearedEvent.clear()
@@ -283,12 +285,10 @@ class Driver(object):
 
                 frameData = [z.SOF, length] + data + [checksum]
 
-                # ok, we received a full data frame - let's check it decide what to do with it
-                dataFrame = AppCommandFrame.fromDeviceData(frameData)                     # is it a valid AppCommandFrame?
-                if not dataFrame: dataFrame = CallbackRequest.fromDeviceData(frameData)   # nope! Is it a valid CallbackRequest?
-                if not dataFrame: dataFrame = DataFrame.fromDeviceData(frameData)         # nope! Is it at least a valid generic DataFrame?
+                # ok, we received a full data frame - let's read it
+                dataFrame:DataFrame = DataFrame.fromDeviceData(frameData)
 
-                logging.debug("<<<: [ %s ]: %s", " ".join(["%02x" % i for i in frameData]), dataFrame.__class__ if dataFrame else "invalid")
+                logging.debug("<<<: [ %s ]: %s", " ".join(["%02x" % i for i in frameData]), "invalid" if dataFrame is None else "valid")
 
                 if not dataFrame:   # nope! This frame is invalid --> let's send a NAK
                     logging.error("X<<: Received invalid frame [ %s ]", " ".join(["%02x" % i for i in frameData]))
@@ -301,7 +301,7 @@ class Driver(object):
 
                 with self.transactionLock:
                     if dataFrame.frameType == DataFrame.FrameType.RESPONSE:
-                        if not self.ongoingTransaction or not self.ongoingTransaction.processResponse(dataFrame):
+                        if not self.ongoingTransaction or not self.ongoingTransaction.processResponse(dataFrame.serialRequest):
                             # we did not expect a response here
                             logging.warning("X<<: Received non-matching response - ignore")
                             continue
@@ -366,16 +366,16 @@ class Driver(object):
                         self.confirmationIssueHandler(timeout=False)
                         continue
 
-        logging.info("DeviceProcessingThread terminated")
+        logging.warning("DeviceProcessingThread terminated")
 
 
     # This Thread distributes incoming commands (APPLICATION_COMMAND_HANDLER, APPLICATION_UPDATE) not
     # related to a live transaction to registered listeners (command_translator) for asynchronous processing
     def CallbackThread(self):
         while not self._terminate:
-            command, commandParameters = self.callBackQueue.get()
-            if command == self.TERMINATE: break
+            serialRequest = self.callBackQueue.get()
+            if serialRequest is None: break
 
-            for listener in self.listeners: listener.put(command, commandParameters)
+            for listener in self.listeners: listener.put(serialRequest)
 
-        logging.info("CallbackThread terminated")
+        logging.warning("CallbackThread terminated")

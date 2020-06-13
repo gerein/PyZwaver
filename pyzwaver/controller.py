@@ -25,17 +25,14 @@ import time
 
 from pyzwaver import zwave as z
 from pyzwaver.driver import Driver
-from pyzwaver.driver import MessageQueueOut
 from pyzwaver.transaction import Transaction
+from pyzwaver.command import SerialRequest
 
 _APPLICATION_NODEINFO_LISTENING = 1
 _NUM_NODE_BITFIELD_BYTES = 29
 
 MESSAGE_TIMEOUT = 100
 MESSAGE_NOT_DELIVERED = 101
-
-CONTROLLER_STATE_NONE = 0
-CONTROLLER_STATE_INITIALIZED = 1
 
 ACTIVITY_ADD_NODE          = "AddNode"
 ACTIVITY_STOP_ADD_NODE     = "StopAddNode"
@@ -50,15 +47,6 @@ EVENT_PAIRING_FAILED   = "Failed"
 EVENT_PAIRING_SUCCESS  = "Success"
 EVENT_PAIRING_STARTED  = "Started"
 
-def ExtractNodes(bits):
-    assert len(bits) == _NUM_NODE_BITFIELD_BYTES
-    r = set()
-    for i in range(8 * _NUM_NODE_BITFIELD_BYTES):
-        if (bits[i // 8] & (1 << (i % 8))) == 0:
-            continue
-        node_id = i + 1
-        r.add(node_id)
-    return r
 EVENT_UPDATE_STARTED   = "Started"
 EVENT_UPDATE_COMPLETE  = "Complete"
 
@@ -121,60 +109,10 @@ class ControllerProperties:
         self._api_mask = None
         self.attrs = set()
 
-    def SetVersion(self, version_str, library_type):
-        if version_str[-1] == 0:
-            version_str = version_str[:-1]
-
-        self.library_type = library_type
-        self.version_str = version_str
-        assert self.library_type <= 8
-        if self.library_type == 7:
-            self.attrs.add("bridge")
-        logging.info("library_type: %s", self.library_type)
-
-    def SetId(self, home_id, node_id):
-        self.home_id = home_id
-        self.node_id = node_id
-        logging.info("home-id: 0x%x node-id: %d", self.home_id, self.node_id)
-
-    def SetControllerCapabilites(self, caps):
-        logging.info("capabilities: %x", caps)
-        if caps & z.CAP_CONTROLLER_SECONDARY:
-            self.attrs.add("secondary")
-        if caps & z.CAP_CONTROLLER_SUC:
-            self.attrs.add("suc")
-        if caps & z.CAP_CONTROLLER_SIS:
-            self.attrs.add("sis")
-        if caps & z.CAP_CONTROLLER_REAL_PRIMARY:
-            self.attrs.add("real_primary")
-
-    def HasApi(self, func):
-        fid = func - 1
-        return self._api_mask[fid // 8] & (1 << (fid % 8))
-
-    def SetSerialCapabilities(self, serial_api_version, manu_id, type_id, prod_id, api_mask):
-        self.serial_api_version = serial_api_version
-        self.product = (manu_id, type_id, prod_id)
-        self._api_mask = api_mask
-
-    def SetInitAndReturnBits(self, serial_version, caps, num_bytes, bits, chip_type, version):
-        assert num_bytes == _NUM_NODE_BITFIELD_BYTES
-        self.serial_version = serial_version
-        self.chip_type = chip_type
-        self.version = version
-        logging.info("serial caps: %x", caps)
-        if caps & z.SERIAL_CAP_SLAVE:
-            self.attrs.add("serial_slave")
-        if caps & z.SERIAL_CAP_TIMER_SUPPORT:
-            self.attrs.add("serial_timer")
-        if caps & z.SERIAL_CAP_SECONDARY:
-            self.attrs.add("serial_secondary")
-        return bits
-
     def StringApis(self):
         out = []
         for func, name in z.API_TO_STRING.items():
-            if self.HasApi(func):
+            if self._api_mask[(func - 1) // 8] & (1 << ((func - 1) % 8)):   # previously .HasApi(func)
                 out.append("%s[%d]" % (name, func))
         return "\n".join(out)
 
@@ -186,6 +124,19 @@ class ControllerProperties:
                "attrs: %s" % repr(self.attrs)
 
 
+def ignoreTimeoutHandler(callback):
+    def handler(callbackReason, serialCommandValues):
+        if callbackReason != Transaction.CallbackReason.TIMED_OUT: callback(serialCommandValues)
+    return handler
+
+def ExtractNodes(bits):
+    assert len(bits) == _NUM_NODE_BITFIELD_BYTES
+    r = set()
+    for i in range(8 * _NUM_NODE_BITFIELD_BYTES):
+        if (bits[i // 8] & (1 << (i % 8))) == 0: continue
+        node_id = i + 1
+        r.add(node_id)
+    return r
 
 
 class Controller:
@@ -196,15 +147,9 @@ class Controller:
     """
 
     def __init__(self, driver: Driver, pairing_timeout_secs=15.0):
-        """
-        :param message_queue:  is used to send commands to the controller and other zwave nodes.
-                               The other end of the queue must be handled by the driver.
-        :param pairing_timeout_secs:
-        """
-        # self._event_cb = event_cb
-        self._pairing_timeout_sec = pairing_timeout_secs
-        self._state = CONTROLLER_STATE_NONE
         self.driver = driver
+        self._pairing_timeout_sec = pairing_timeout_secs
+        self.isInitialised = False
         self.nodes = set()
         self.failed_nodes = set()
         self.props = ControllerProperties()
@@ -229,145 +174,149 @@ class Controller:
         return "\n".join(out)
 
     def UpdateVersion(self):
-        def handler(callbackReason, data):
+        def handler(callbackReason, serialCommandValues):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT:
                 # logging.error("Cannot read controller version. Check serial device.")
                 raise ValueError("Cannot read controller version. Check serial device.")
-            else:
-                logging.debug("Handling version response: %s", data)
-                self.props.SetVersion(*struct.unpack(">12sB", bytes(data)))
 
-        self.driver.sendRequest(z.API_ZW_GET_VERSION, [], callback=handler)
+            logging.debug("Handling version response: %s", serialCommandValues["rest"])
+            self.props.version_str, self.props.library_type = struct.unpack(">12sB", bytes(serialCommandValues["rest"]))
+            if self.props.version_str[-1] == 0: self.props.version_str = self.props.version_str[:-1]
+            assert self.props.library_type <= 8
+            if self.props.library_type == 7: self.props.attrs.add("bridge")
+            logging.info("===: GET_VERSION result: library: %s, type: %s", self.props.version_str, self.props.library_type)
+
+        self.driver.sendRequest(SerialRequest(z.API_ZW_GET_VERSION), requestPriority=Driver.RequestPriority.HIGHEST, callback=handler)
 
     def UpdateId(self):
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            self.props.SetId(*struct.unpack(">IB",bytes(data)))
+        def handler(serialCommandValues):
+            self.props.home_id = (serialCommandValues["homeidMSW"] << 16) + serialCommandValues["homeidLSW"]
+            self.props.node_id = serialCommandValues["node"]
+            logging.info("===: MEMORY_GET_ID result: home-id: 0x%x, node-id: %d", self.props.home_id, self.props.node_id)
 
-        self.driver.sendRequest(z.API_ZW_MEMORY_GET_ID, [], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_MEMORY_GET_ID),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def UpdateControllerCapabilities(self):
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            self.props.SetControllerCapabilites(data[0])
+        def handler(serialCommandValues):
+            props = set()
+            if serialCommandValues["retval"] & z.CAP_CONTROLLER_SECONDARY:    props.add("secondary")
+            if serialCommandValues["retval"] & z.CAP_CONTROLLER_SUC:          props.add("suc")
+            if serialCommandValues["retval"] & z.CAP_CONTROLLER_SIS:          props.add("sis")
+            if serialCommandValues["retval"] & z.CAP_CONTROLLER_REAL_PRIMARY: props.add("real_primary")
+            logging.info("===: GET_CONTROLLER_CAPABILITIES results: capabilities: %x = (%s)", serialCommandValues["retval"], ", ".join([i for i in props]))
+            for p in props: self.props.attrs.add(p)
 
-        self.driver.sendRequest(z.API_ZW_GET_CONTROLLER_CAPABILITIES, [], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_GET_CONTROLLER_CAPABILITIES),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def UpdateSerialApiGetCapabilities(self):
-        """
-        """
+        def handler(serialCommandValues):
+            self.props.serial_api_version = serialCommandValues["version"]
+            self.props.product = (serialCommandValues["manufacturer"], serialCommandValues["productType"], serialCommandValues["productId"])
+            self.props._api_mask = serialCommandValues["functionBitmask"]
+            logging.info("===: GET_CAPABILITIES results: product: %s", self.props.product)  #FIXME: add functionBitmask output
 
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            self.props.SetSerialCapabilities(*struct.unpack(">HHHH32s", bytes(data)))
-
-        self.driver.sendRequest(z.API_SERIAL_API_GET_CAPABILITIES, [], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_SERIAL_API_GET_CAPABILITIES),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def UpdateSerialApiGetInitData(self):
         """This get all the node numbers"""
 
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            bits = self.props.SetInitAndReturnBits(*struct.unpack(">BBB29sBB", bytes(data)))
-            self.nodes = ExtractNodes(bits)
+        def handler(serialCommandValues):
+            self.props.serial_version = serialCommandValues["version"]
+            self.props.chip_type = serialCommandValues["chipType"]
+            self.props.version = serialCommandValues["chipVersion"]
 
-        self.driver.sendRequest(z.API_SERIAL_API_GET_INIT_DATA, [], callback=handler)
+            props = set()
+            if serialCommandValues["capabilities"] & z.SERIAL_CAP_SLAVE:         props.add("serial_slave")
+            if serialCommandValues["capabilities"] & z.SERIAL_CAP_TIMER_SUPPORT: props.add("serial_timer")
+            if serialCommandValues["capabilities"] & z.SERIAL_CAP_SECONDARY:     props.add("serial_secondary")
+            logging.info("===: GET_INIT_DATA results: capabilities: %x = (%s)", serialCommandValues["capabilities"], ", ".join([i for i in props]))
+            for p in props: self.props.attrs.add(p)
+
+            self.nodes = ExtractNodes(serialCommandValues["nodemask"])
+
+        self.driver.sendRequest(SerialRequest(z.API_SERIAL_API_GET_INIT_DATA),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def SetTimeouts(self, ack_timeout_msec, byte_timeout_msec):
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            logging.info("previous timeouts: %d %d", data[0] * 10, data[1] * 10)
+        def handler(serialCommandValues):
+            logging.info("===: SET_TIMEOUTS results: previous_timeouts: %d %d",
+                         serialCommandValues["prevrxacktimeout"] * 10, serialCommandValues["prevrxbytetimeout"] * 10)
 
-        self.driver.sendRequest(z.API_SERIAL_API_SET_TIMEOUTS,
-                         [ack_timeout_msec // 10, byte_timeout_msec // 10],
-                         callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_SERIAL_API_SET_TIMEOUTS,
+                                              {"rxacktimeout": ack_timeout_msec // 10, "rxbytetimeout": byte_timeout_msec // 10}),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def UpdateSucNodeId(self):
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            succ_node = data[0]
-            logging.info("suc node id: %s", succ_node)
+        def handler(serialCommandValues):
+            logging.info("===: GET_SUC_NODE results: suc_node_id: %s", serialCommandValues["sucnodeid"])
 
-        self.driver.sendRequest(z.API_ZW_GET_SUC_NODE_ID, [], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_GET_SUC_NODE_ID),
+                                requestPriority=Driver.RequestPriority.HIGHEST,  callback=ignoreTimeoutHandler(handler))
 
     def GetRandom(self, _, cb):
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            success = data[0]
-            size = data[1]
-            data = data[2:2 + size]
-            cb(success, data)
+        def handler(serialCommandValues):
+            cb(serialCommandValues["randomGenerationSuccess"], serialCommandValues["randomBytes"])
 
-        self.driver.sendRequest(z.API_ZW_GET_RANDOM, [], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_GET_RANDOM),
+                                requestPriority=Driver.RequestPriority.HIGHEST,  callback=ignoreTimeoutHandler(handler))
 
     def UpdateFailedNode(self, node: int):
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            if data[0]:
+        def handler(serialCommandValues):
+            if serialCommandValues["retval"]:
                 self.failed_nodes.add(node)
             else:
                 self.failed_nodes.discard(node)
 
-        self.driver.sendRequest(z.API_ZW_IS_FAILED_NODE_ID, [node], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_IS_FAILED_NODE_ID, {"node": node}),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def ReadMemory(self, offset: int, length: int, cb):
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            logging.info("received %x bytes", len(data))
-            cb(data)
-
-        self.driver.sendRequest(z.API_ZW_READ_MEMORY,
-                         [offset >> 8, offset & 0xff, length],
-                         callback=handler)
-
-    def GetRoutingInfo(self, node: int, rem_bad, rem_non_repeaters, cb):
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            cb(node, ExtractNodes(data))
-
-        self.driver.sendRequest(z.API_ZW_GET_ROUTING_INFO,
-                         [node, rem_bad, rem_non_repeaters, 3],
-                         callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_READ_MEMORY, [offset >> 8, offset & 0xff, length]),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(cb))
 
     def SetPromiscuousMode(self, state):
-        def handler(callbackReason, data):
-            pass
-
-        self.driver.sendRequest(z.API_ZW_SET_PROMISCUOUS_MODE, [state], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_SET_PROMISCUOUS_MODE, [state]),
+                                requestPriority=Driver.RequestPriority.HIGHEST)
 
     def RequestNodeInfo(self, node: int, cb=None):
-        """Force the generation of a zwave.API_ZW_APPLICATION_UPDATE event
-        """
-        logging.warning("requesting node info for %d", node)
+        """Force the generation of a zwave.API_ZW_APPLICATION_UPDATE event"""
+        logging.warning("===: REQUEST_NODE_INFO results: node: %d)", node)
 
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            if cb:
-                cb(data[0])
+        def handler(data):
+            if cb: cb(data[0])
 
-        self.driver.sendRequest(z.API_ZW_REQUEST_NODE_INFO, [node], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_REQUEST_NODE_INFO, {"node": node}),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def RemoveFailedNode(self, node: int, cb):  # FIXME: figure out flow and if it still works correctly, currently not used
         def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT:
-                cb(MESSAGE_TIMEOUT)
-            elif callbackReason == Transaction.CallbackReason.RESPONSE_RECEIVED:
-                cb(MESSAGE_NOT_DELIVERED)
+            if   callbackReason == Transaction.CallbackReason.TIMED_OUT:         cb(MESSAGE_TIMEOUT)
+            elif callbackReason == Transaction.CallbackReason.RESPONSE_RECEIVED: cb(MESSAGE_NOT_DELIVERED)
             else:
                 return cb(data[1])
 
-        self.driver.sendRequest(z.API_ZW_REMOVE_FAILED_NODE_ID, [node], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_REMOVE_FAILED_NODE_ID, {"node": node}),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=handler)
 
     # ============================================================
     # Routing
     # ============================================================
     def UpdateRoutingInfo(self):
-        def handler(node, neighbors):
-            logging.info("[%d] setting routing info to: %s", node, neighbors)
-            self.routes[node] = set(neighbors)
+        def nodeWrappedHandler(node):
+            def handler(callbackReason, serialCommandValues):
+                if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+                self.routes[node] = serialCommandValues["nodelist"]
+                logging.info("===: UpdateRoutingInfo results: setting routing info for node %d to: %s",
+                             node, self.routes[node])
+            return handler
 
         for n in self.nodes:
-            self.GetRoutingInfo(n, False, False, handler)
+            self.driver.sendRequest(SerialRequest(z.API_ZW_GET_ROUTING_INFO,
+                                                  {"node": n, "removebad": False, "removenonreps": False, "_mustbezero": 0}),
+                                    requestPriority=Driver.RequestPriority.HIGHEST, callback=nodeWrappedHandler(n))
 
     # ============================================================
     # Pairing
@@ -375,7 +324,7 @@ class Controller:
     def MakeFancyReceiver(self, activity: str, receiver_type, event_cb):
         stringMap, actions = receiver_type
 
-        def Handler(callbackReason, data):
+        def Handler(callbackReason, serialCommandValues):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT:
                 logging.error("XXX: Aborted %s", activity)
                 event_cb(activity, EVENT_PAIRING_ABORTED, None)
@@ -407,10 +356,12 @@ class Controller:
                 self.RequestNodeInfo(node)
                 self.Update()
                 return True
+
             elif a == PAIRING_ACTION_FAILED:
                 logging.warning("===: Pairing: [%s] Failure - %s [%d]", activity, name, node)
                 event_cb(activity, EVENT_PAIRING_FAILED, node)
                 return True
+
             else:
                 logging.error("XXX: Pairing: activity unexpected: ${name}")
                 return False
@@ -420,7 +371,7 @@ class Controller:
     def NeighborUpdate(self, node: int, event_cb):
         activity = "NeighborUpdate",
 
-        def handler(callbackReason, data):
+        def handler(callbackReason, serialCommandValues):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT:
                 logging.error("[%s] Aborted", activity)
                 event_cb(activity, EVENT_PAIRING_ABORTED, node)
@@ -443,84 +394,83 @@ class Controller:
                 logging.error("[%s] unknown status %d %s", activity, status, " ".join(["%02x" % i for i in data]))
                 return True
 
-        self.driver.sendRequest(z.API_ZW_REQUEST_NODE_NEIGHBOR_UPDATE, [node], timeout=self._pairing_timeout_sec, callback=handler)
         logging.warning("===: NeighborUpdate(%d)", node)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_REQUEST_NODE_NEIGHBOR_UPDATE, {"node": node}),
+                                requestPriority=Driver.RequestPriority.HIGHEST, timeout=self._pairing_timeout_sec, callback=handler)
 
     def AddNodeToNetwork(self, event_cb):
-        cb = self.MakeFancyReceiver(ACTIVITY_ADD_NODE, HANDLER_TYPE_ADD_NODE, event_cb)
-        self.driver.sendRequest(z.API_ZW_ADD_NODE_TO_NETWORK, [z.ADD_NODE_ANY], timeout=self._pairing_timeout_sec, callback=cb)
         logging.warning("===: AddNodeToNetwork")
+        self.driver.sendRequest(SerialRequest(z.API_ZW_ADD_NODE_TO_NETWORK, [z.ADD_NODE_ANY]),
+                                requestPriority=Driver.RequestPriority.HIGHEST, timeout=self._pairing_timeout_sec,
+                                callback=self.MakeFancyReceiver(ACTIVITY_ADD_NODE, HANDLER_TYPE_ADD_NODE, event_cb))
 
     def StopAddNodeToNetwork(self, event_cb):
-        cb = self.MakeFancyReceiver(ACTIVITY_STOP_ADD_NODE, HANDLER_TYPE_STOP, event_cb)
-        self.driver.sendRequest(z.API_ZW_ADD_NODE_TO_NETWORK, [z.ADD_NODE_STOP], timeout=5, callback=cb)
         logging.warning("===: StopAddNodeToNetwork")
+        self.driver.sendRequest(SerialRequest(z.API_ZW_ADD_NODE_TO_NETWORK, [z.ADD_NODE_STOP]),
+                                requestPriority=Driver.RequestPriority.HIGHEST, timeout=5,
+                                callback=self.MakeFancyReceiver(ACTIVITY_STOP_ADD_NODE, HANDLER_TYPE_STOP, event_cb))
 
     def RemoveNodeFromNetwork(self, event_cb):
-        cb = self.MakeFancyReceiver(ACTIVITY_REMOVE_NODE, HANDLER_TYPE_REMOVE_NODE, event_cb)
-        self.driver.sendRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, [z.REMOVE_NODE_ANY], cb, timeout=self._pairing_timeout_sec)
         logging.warning("===: RemoveNodeFromNetwork")
+        self.driver.sendRequest(SerialRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, [z.REMOVE_NODE_ANY]),
+                                requestPriority=Driver.RequestPriority.HIGHEST, timeout=self._pairing_timeout_sec,
+                                callback=self.MakeFancyReceiver(ACTIVITY_REMOVE_NODE, HANDLER_TYPE_REMOVE_NODE, event_cb))
 
     def StopRemoveNodeFromNetwork(self, _):
         # NOTE: this will sometimes result in a "stray request" being sent back:
         #  SOF len:07 REQU API_ZW_REMOVE_NODE_FROM_NETWORK:4b cb:64 status:06 00 00 chk:d1
         # We just drop this message on the floor
-        self.driver.sendRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, [z.REMOVE_NODE_STOP])
+        self.driver.sendRequest(SerialRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, [z.REMOVE_NODE_STOP]))
 
     def SetLearnMode(self, event_cb):
-        cb = self.MakeFancyReceiver(ACTIVITY_SET_LEARN_MODE, HANDLER_TYPE_SET_LEARN_MODE, event_cb)
-        self.driver.sendRequest(z.API_ZW_SET_LEARN_MODE, [z.LEARN_MODE_NWI], timeout=self._pairing_timeout_sec, callback=cb)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_SET_LEARN_MODE, [z.LEARN_MODE_NWI]),
+                                requestPriority=Driver.RequestPriority.HIGHEST, timeout=self._pairing_timeout_sec,
+                                callback=self.MakeFancyReceiver(ACTIVITY_SET_LEARN_MODE, HANDLER_TYPE_SET_LEARN_MODE, event_cb))
 
     def StopSetLearnMode(self, _):
-        self.driver.sendRequest(z.API_ZW_SET_LEARN_MODE, [z.LEARN_MODE_DISABLE])
+        self.driver.sendRequest(SerialRequest(z.API_ZW_SET_LEARN_MODE, [z.LEARN_MODE_DISABLE]))
 
     def ChangeController(self, event_cb):
-        cb = self.MakeFancyReceiver(ACTIVITY_CHANGE_CONTROLLER, HANDLER_TYPE_ADD_NODE, event_cb)
-        self.driver.sendRequest(z.API_ZW_CONTROLLER_CHANGE, [z.CONTROLLER_CHANGE_START], timeout=self._pairing_timeout_sec, callback=cb)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_CONTROLLER_CHANGE, [z.CONTROLLER_CHANGE_START]),
+                                requestPriority=Driver.RequestPriority.HIGHEST, timeout=self._pairing_timeout_sec,
+                                callback=self.MakeFancyReceiver(ACTIVITY_CHANGE_CONTROLLER, HANDLER_TYPE_ADD_NODE, event_cb))
 
     def StopChangeController(self, _):
-        self.driver.sendRequest(z.API_ZW_CONTROLLER_CHANGE, [z.CONTROLLER_CHANGE_STOP])
+        self.driver.sendRequest(SerialRequest(z.API_ZW_CONTROLLER_CHANGE, [z.CONTROLLER_CHANGE_STOP]),
+                                requestPriority=Driver.RequestPriority.HIGHEST)
 
     # ============================================================
 
     def ApplNodeInformation(self):
         """Advertise/change the features of this node"""
 
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            logging.warning("controller is now initialized")
-            self._state = CONTROLLER_STATE_INITIALIZED
+        def handler(serialCommandValues):
+            logging.warning("===: Controller is now initialized")
+            self.isInitialised = True
 
-        self.driver.sendRequest(z.API_SERIAL_API_APPL_NODE_INFORMATION,
-                                [_APPLICATION_NODEINFO_LISTENING,
-                                 2,  # generic
-                                 1,  # specific
-                                 0,  # rest: size + data
-                                 ],
-                                callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_SERIAL_API_APPL_NODE_INFORMATION,
+                                              {"deviceoptions": _APPLICATION_NODEINFO_LISTENING, "generic": 2, "specific": 1,"nodeparm": ""}),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def SendNodeInformation(self, dst_node: int, xmit: int, cb):
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            cb(data)
-
-        self.driver.sendRequest(z.API_ZW_SEND_NODE_INFORMATION, [dst_node, xmit], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_SEND_NODE_INFORMATION, [dst_node, xmit]),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(cb))
 
     def SetDefault(self):
         """Factory reset the controller"""
 
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            logging.warning("set default response %s", data)
+        def handler(serialCommandValues):
+            logging.warning("===: SET_DEFAULT results: set default response %s", data)
 
-        self.driver.sendRequest(z.API_ZW_SET_DEFAULT, [], callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_SET_DEFAULT),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def SoftReset(self):
-        def handler(callbackReason, data):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
-            logging.warning("soft reset response %s", data)
+        def handler(serialCommandValues):
+            logging.warning("===: SOFT_RESET results: soft reset response %s", data)
 
-        self.driver.sendRequest(z.API_SERIAL_API_SOFT_RESET, [], timeout=2.0, callback=handler)
+        self.driver.sendRequest(SerialRequest(z.API_SERIAL_API_SOFT_RESET),
+                                requestPriority=Driver.RequestPriority.HIGHEST, timeout=2.0, callback=ignoreTimeoutHandler(handler))
 
 
     def Initialize(self):
@@ -536,19 +486,21 @@ class Controller:
     def WaitUntilInitialized(self, max_wait=5):
         logging.info("Waiting for the controller to initialise...")
         deadline = time.time() + max_wait
-        while self._state != CONTROLLER_STATE_INITIALIZED:
-            logging.warning("wait - current Controller state is: %s", self._state)
+        while not self.isInitialised and time.time() < deadline:
             time.sleep(0.5)
-            if time.time() > deadline:
-                return False
+            if not self.isInitialised: logging.warning("...still waiting...")
+
+        if time.time() > deadline:
+            logging.error("...timeout! Controller didn't initialise in time. State undefined!")
+            return False
+
+        logging.info("...done! Controller is initialised")
         return True
 
     def TriggerNodesUpdate(self):
         logging.info("trigger nodes update")
         for n in self.nodes:
-            if n == self.props.node_id:
-                continue
-            self.RequestNodeInfo(n)
+            if n != self.props.node_id: self.RequestNodeInfo(n)
 
     def GetNodeId(self):
         return self.props.node_id
