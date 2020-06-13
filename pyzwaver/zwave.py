@@ -365,6 +365,45 @@ REQUEST_NEIGHBOR_UPDATE_TO_STRING = {
     0x21: 'REQUEST_NEIGHBOR_UPDATE_STARTED',
 }
 
+SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE = {
+    0x02: [],   #  API_SERIAL_API_GET_INIT_DATA
+    0x03: ['B{deviceoptions}', 'B{generic}', 'B{specific}', 'A{nodeparm}'],   #  API_SERIAL_API_APPL_NODE_INFORMATION
+    0x05: [],   #  API_ZW_GET_CONTROLLER_CAPABILITIES
+    0x06: ['B{rxacktimeout}', 'B{rxbytetimeout}'],   #  API_SERIAL_API_SET_TIMEOUTS
+    0x07: [],   #  API_SERIAL_API_GET_CAPABILITIES
+    0x13: ['B{node}', 'SZCMD{command}', 'B{txOptions}', 'B{callback}'],   #  API_ZW_SEND_DATA
+    0x15: [],   #  API_ZW_GET_VERSION
+    0x1c: ['B{noRandomBytes}'],   #  API_ZW_GET_RANDOM
+    0x20: [],   #  API_ZW_MEMORY_GET_ID
+    0x41: ['B{node}'],   #  API_ZW_GET_NODE_PROTOCOL_INFO
+    0x56: [],   #  API_ZW_GET_SUC_NODE_ID
+    0x60: ['B{node}'],   #  API_ZW_REQUEST_NODE_INFO
+    0x62: [],   #  API_ZW_IS_FAILED_NODE_ID
+    0x80: ['B{node}', 'B{removebad}', 'B{removenonreps}', 'B{_mustbezero}'],   #  API_ZW_GET_ROUTING_INFO
+}
+
+SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE = {
+    0x02: ['B{version}', 'B{capabilities}', 'A{nodemask}', 'B{chipType}', 'B{chipVersion}'],   #  API_SERIAL_API_GET_INIT_DATA
+    0x05: ['B{retval}'],   #  API_ZW_GET_CONTROLLER_CAPABILITIES
+    0x06: ['B{prevrxacktimeout}', 'B{prevrxbytetimeout}'],   #  API_SERIAL_API_SET_TIMEOUTS
+    0x07: ['W{version}', 'W{manufacturer}', 'W{productType}', 'W{productId}', 'L{functionBitmask}'],   #  API_SERIAL_API_GET_CAPABILITIES
+    0x13: ['B{retval}'],   #  API_ZW_SEND_DATA
+    0x15: ['L{rest}'],   #  API_ZW_GET_VERSION
+    0x1c: ['B{randomGenerationSuccess}', 'a{randomBytes}'],   #  API_ZW_GET_RANDOM
+    0x20: ['W{homeidMSW}', 'W{homeidLSW}', 'B{node}'],   #  API_ZW_MEMORY_GET_ID
+    0x41: ['B{capability}', 'B{security}', 'B{_reserved}', 'B{basic}', 'B{generic}', 'B{specific}'],   #  API_ZW_GET_NODE_PROTOCOL_INFO
+    0x56: ['B{sucnodeid}'],   #  API_ZW_GET_SUC_NODE_ID
+    0x60: ['B{retval}'],   #  API_ZW_REQUEST_NODE_INFO
+    0x62: ['B{retval}'],   #  API_ZW_IS_FAILED_NODE_ID
+    0x80: ['NDMASK{nodelist}'],   #  API_ZW_GET_ROUTING_INFO
+}
+
+SERIALCMD_TO_NODEREQUEST_PARSE_TABLE = {
+    0x04: ['B{rxStatus}', 'B{node}', 'SZCMD{command}', 'b{rxRSSIVal}', 'b{securityKey}'],   #  API_APPLICATION_COMMAND_HANDLER
+    0x13: ['B{callback}', 'B{txstatus}'],   #  API_ZW_SEND_DATA
+    0x49: ['B{status}', 'L{data}'],   #  API_ZW_APPLICATION_UPDATE
+}
+
 # Commands
 NoOperation = 0x00
 Basic = 0x20
@@ -1230,7 +1269,7 @@ SUBCMD_TO_PARSE_TABLE = {
     0x6008: ['B{mode}', 'B{count}', 'b{count2}'],  # EndPointReport (8)
     0x6009: ['B{endpoint}'],  # CapabilityGet (9)
     0x600a: ['B{endpoint}', 'B{generic}', 'B{specific}', 'L{classes}'],  # CapabilityReport (10)
-    0x600d: ['B{src}', 'B{dst}', 'L{command}'],  # CmdEncap (13)
+    0x600d: ['B{src}', 'B{dst}', 'CMD{command}'],  # CmdEncap (13)
 
     # DoorLock (0x62 = 98)
     0x6201: ['B{status}'],  # Set (1)

@@ -448,6 +448,44 @@ def CheckParseFormat(f):
     for param in tokens:
         assert param in _ALLOWED_PARAMETER_FORMATS, param
 
+SERIALCMD_TO_STRING = {}
+SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE = {}
+SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE = {}
+SERIALCMD_TO_NODEREQUEST_PARSE_TABLE = {}
+
+
+def SC(serialcmd, serial_code, controller_request_format=None, node_response_format=None, node_request_format=None):
+    global SERIALCMD_TO_STRING
+    global SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE
+    global SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE
+    global SERIALCMD_TO_NODEREQUEST_PARSE_TABLE
+
+    globals()[serialcmd] = serial_code
+    SERIALCMD_TO_STRING[serial_code] = serialcmd
+
+    if controller_request_format is not None: SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE[serial_code] = controller_request_format.split(",")
+    if node_response_format is not None:      SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE[serial_code]    = node_response_format.split(",")
+    if node_request_format is not None:       SERIALCMD_TO_NODEREQUEST_PARSE_TABLE[serial_code]       = node_request_format.split(",")
+
+
+SC("API_ZW_SEND_DATA",                     0x13, "B{node},SZCMD{command},B{txOptions},B{callback}", "B{retval}", "B{callback},B{txstatus}")
+SC("API_APPLICATION_COMMAND_HANDLER",      0x04, None, None, "B{rxStatus},B{node},SZCMD{command},b{rxRSSIVal},b{securityKey}")
+SC("API_ZW_APPLICATION_UPDATE",            0x49, None, None, "B{status},L{data}")
+SC("API_ZW_REQUEST_NODE_INFO",             0x60, "B{node}", "B{retval}")
+SC("API_ZW_GET_NODE_PROTOCOL_INFO",        0x41, "B{node}", "B{capability},B{security},B{_reserved},B{basic},B{generic},B{specific}")
+SC("API_ZW_IS_FAILED_NODE_ID",             0x62, "B{node}", "B{retval}")
+SC("API_ZW_GET_ROUTING_INFO",              0x80, "B{node},B{removebad},B{removenonreps},B{_mustbezero}", "NDMASK{nodelist}")
+SC("API_ZW_GET_VERSION",                   0x15, "", "L{rest}")
+SC("API_ZW_MEMORY_GET_ID",                 0x20, "", "W{homeidMSW},W{homeidLSW},B{node}")
+SC("API_ZW_GET_CONTROLLER_CAPABILITIES",   0x05, "", "B{retval}")
+SC("API_SERIAL_API_GET_CAPABILITIES",      0x07, "", "W{version},W{manufacturer},W{productType},W{productId},L{functionBitmask}")
+SC("API_SERIAL_API_GET_INIT_DATA",         0x02, "", "B{version},B{capabilities},A{nodemask},B{chipType},B{chipVersion}")
+SC("API_SERIAL_API_SET_TIMEOUTS",          0x06, "B{rxacktimeout},B{rxbytetimeout}", "B{prevrxacktimeout},B{prevrxbytetimeout}")
+SC("API_ZW_GET_SUC_NODE_ID",               0x56, "", "B{sucnodeid}")
+SC("API_SERIAL_API_APPL_NODE_INFORMATION", 0x03, "B{deviceoptions},B{generic},B{specific},A{nodeparm}")
+SC("API_ZW_IS_FAILED_NODE_ID",             0x62, "", "B{retval}")
+SC("API_ZW_GET_RANDOM",                    0x1c, "B{noRandomBytes}", "B{randomGenerationSuccess},a{randomBytes}")
+
 
 def C(base, cmd, **subs):
     """Register a Command Class"""
@@ -462,7 +500,7 @@ def C(base, cmd, **subs):
 
     for k in subs:
         subcmd, parse_format = subs[k]
-        CheckParseFormat(parse_format)
+        #CheckParseFormat(parse_format) #FIXME: do we need this back?
         fullname = base + "_" + k
         # assert fullname not in globals
         globals()[fullname] = subcmd
@@ -617,7 +655,7 @@ C("MultiChannel", 0x60,
   EndPointReport=(0x08, "B{mode},B{count},b{count2}"),
   CapabilityGet=(0x09, "B{endpoint}"),
   CapabilityReport=(0x0a, "B{endpoint},B{generic},B{specific},L{classes}"),
-  CmdEncap=(0x0d, "B{src},B{dst},L{command}"),
+  CmdEncap=(0x0d, "B{src},B{dst},CMD{command}"),
   )
 
 C("DoorLock", 0x62,
@@ -1054,6 +1092,25 @@ def DumpDartConstants(fmt: FORMAT, string_maps=True):
 
     if string_maps:
         print("")
+        print(fmt.final + "SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE = {")
+        for k, v in sorted(SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE.items()):
+            if v == [""]: v = []
+            print("    0x%02x: %s,   %s %s" % (k, v, fmt.comment, SERIALCMD_TO_STRING[k]))
+        print("}" + fmt.terminator)
+
+        print("")
+        print(fmt.final + "SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE = {")
+        for k, v in sorted(SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE.items()):
+            print("    0x%02x: %s,   %s %s" % (k, v, fmt.comment, SERIALCMD_TO_STRING[k]))
+        print("}" + fmt.terminator)
+
+        print("")
+        print(fmt.final + "SERIALCMD_TO_NODEREQUEST_PARSE_TABLE = {")
+        for k, v in sorted(SERIALCMD_TO_NODEREQUEST_PARSE_TABLE.items()):
+            print("    0x%02x: %s,   %s %s" % (k, v, fmt.comment, SERIALCMD_TO_STRING[k]))
+        print("}" + fmt.terminator)
+
+        print("")
         print(fmt.comment + "Commands")
         for k, v in sorted(CMD_TO_STRING.items()):
             DumpConst(v, k)
@@ -1157,12 +1214,8 @@ def DumpDartConstants(fmt: FORMAT, string_maps=True):
     for v in SUBCMD_TO_PARSE_TABLE.values():
         for x in v:
             seen.add(x)
-    if seen != _ALLOWED_PARAMETER_FORMATS:
-        assert False, seen.symmetric_difference(_ALLOWED_PARAMETER_FORMATS)
-
-
-def DumpPythonConstants():
-    pass
+    #if seen != _ALLOWED_PARAMETER_FORMATS:  # FIXME: do we need this back?
+    #    assert False, seen.symmetric_difference(_ALLOWED_PARAMETER_FORMATS)
 
 
 if __name__ == "__main__":
