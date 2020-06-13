@@ -50,11 +50,10 @@ def GetSingleScalar(key, args):
 
 
 METER_TYPES = [
-    [SENSOR_KIND_INVALID, [None, None, None, None, None, None, None, None]],
-    [SENSOR_KIND_ELECTRIC, ["kWh", "kVAh", "W", "Pulses",
-                            "V", "A", "Power-Factor", None]],
-    [SENSOR_KIND_GAS, ["m^3", "ft^3", None, "Pulses", None, None, None, None]],
-    [SENSOR_KIND_WATER, ["m^3", "ft^3", None, "Pulses", None, None, None, None]],
+    [SENSOR_KIND_INVALID,  [None, None, None, None, None, None, None, None]],
+    [SENSOR_KIND_ELECTRIC, ["kWh", "kVAh", "W", "Pulses", "V", "A", "Power-Factor", None]],
+    [SENSOR_KIND_GAS,      ["m^3", "ft^3", None, "Pulses", None, None, None, None]],
+    [SENSOR_KIND_WATER,    ["m^3", "ft^3", None, "Pulses", None, None, None, None]],
 ]
 
 # TODO: introduce constants for units

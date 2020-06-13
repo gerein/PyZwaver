@@ -37,22 +37,18 @@ MESSAGE_NOT_DELIVERED = 101
 CONTROLLER_STATE_NONE = 0
 CONTROLLER_STATE_INITIALIZED = 1
 
-ACTIVITY_ADD_NODE = "AddNode"
-ACTIVITY_STOP_ADD_NODE = "StopAddNode"
-ACTIVITY_REMOVE_NODE = "RemoveNode"
-ACTIVITY_SET_LEARN_MODE = "SetLearnMode"
+ACTIVITY_ADD_NODE          = "AddNode"
+ACTIVITY_STOP_ADD_NODE     = "StopAddNode"
+ACTIVITY_REMOVE_NODE       = "RemoveNode"
+ACTIVITY_SET_LEARN_MODE    = "SetLearnMode"
 ACTIVITY_CHANGE_CONTROLLER = "ChangeController"
 ACTIVITY_CONTROLLER_UPDATE = "ControllerUpdate"
 
-EVENT_PAIRING_ABORTED = "Aborted"
+EVENT_PAIRING_ABORTED  = "Aborted"
 EVENT_PAIRING_CONTINUE = "InProgress"
-EVENT_PAIRING_FAILED = "Failed"
-EVENT_PAIRING_SUCCESS = "Success"
-EVENT_PAIRING_STARTED = "Started"
-
-EVENT_UPDATE_STARTED = "Started"
-EVENT_UPDATE_COMPLETE = "Complete"
-
+EVENT_PAIRING_FAILED   = "Failed"
+EVENT_PAIRING_SUCCESS  = "Success"
+EVENT_PAIRING_STARTED  = "Started"
 
 def ExtractNodes(bits):
     assert len(bits) == _NUM_NODE_BITFIELD_BYTES
@@ -63,53 +59,50 @@ def ExtractNodes(bits):
         node_id = i + 1
         r.add(node_id)
     return r
+EVENT_UPDATE_STARTED   = "Started"
+EVENT_UPDATE_COMPLETE  = "Complete"
 
-
-PAIRING_ACTION_CONTINUE = 1
-PAIRING_ACTION_DONE = 2
-PAIRING_ACTION_FAILED = 3
+PAIRING_ACTION_CONTINUE    = 1
+PAIRING_ACTION_DONE        = 2
+PAIRING_ACTION_FAILED      = 3
 PAIRING_ACTION_DONE_UPDATE = 4
 
 HANDLER_TYPE_ADD_NODE = (z.ADD_NODE_STATUS_TO_STRING, {
-    z.ADD_NODE_STATUS_LEARN_READY: PAIRING_ACTION_CONTINUE,
-    z.ADD_NODE_STATUS_ADDING_SLAVE: PAIRING_ACTION_CONTINUE,
-    z.ADD_NODE_STATUS_ADDING_CONTROLLER: PAIRING_ACTION_CONTINUE,
-    z.ADD_NODE_STATUS_NODE_FOUND: PAIRING_ACTION_CONTINUE,
-
-    z.ADD_NODE_STATUS_FAILED: PAIRING_ACTION_FAILED,
+    z.ADD_NODE_STATUS_LEARN_READY:                 PAIRING_ACTION_CONTINUE,
+    z.ADD_NODE_STATUS_ADDING_SLAVE:                PAIRING_ACTION_CONTINUE,
+    z.ADD_NODE_STATUS_ADDING_CONTROLLER:           PAIRING_ACTION_CONTINUE,
+    z.ADD_NODE_STATUS_NODE_FOUND:                  PAIRING_ACTION_CONTINUE,
+    z.ADD_NODE_STATUS_FAILED:                      PAIRING_ACTION_FAILED,
     z.REMOVE_NODE_STATUS_NOT_INCLUSION_CONTROLLER: PAIRING_ACTION_FAILED,
-
-    z.ADD_NODE_STATUS_DONE: PAIRING_ACTION_DONE_UPDATE,
-    z.ADD_NODE_STATUS_PROTOCOL_DONE: PAIRING_ACTION_DONE_UPDATE,
+    z.ADD_NODE_STATUS_DONE:                        PAIRING_ACTION_DONE_UPDATE,
+    z.ADD_NODE_STATUS_PROTOCOL_DONE:               PAIRING_ACTION_DONE_UPDATE,
 })
 
 HANDLER_TYPE_STOP = (z.ADD_NODE_STATUS_TO_STRING, {
-    z.ADD_NODE_STATUS_LEARN_READY: PAIRING_ACTION_CONTINUE,
-    z.ADD_NODE_STATUS_ADDING_SLAVE: PAIRING_ACTION_CONTINUE,
-    z.ADD_NODE_STATUS_ADDING_CONTROLLER: PAIRING_ACTION_CONTINUE,
-    z.ADD_NODE_STATUS_NODE_FOUND: PAIRING_ACTION_CONTINUE,
-
-    z.ADD_NODE_STATUS_FAILED: PAIRING_ACTION_DONE,
+    z.ADD_NODE_STATUS_LEARN_READY:                 PAIRING_ACTION_CONTINUE,
+    z.ADD_NODE_STATUS_ADDING_SLAVE:                PAIRING_ACTION_CONTINUE,
+    z.ADD_NODE_STATUS_ADDING_CONTROLLER:           PAIRING_ACTION_CONTINUE,
+    z.ADD_NODE_STATUS_NODE_FOUND:                  PAIRING_ACTION_CONTINUE,
+    z.ADD_NODE_STATUS_FAILED:                      PAIRING_ACTION_DONE,
     z.REMOVE_NODE_STATUS_NOT_INCLUSION_CONTROLLER: PAIRING_ACTION_DONE,
-
-    z.ADD_NODE_STATUS_DONE: PAIRING_ACTION_DONE,
-    z.ADD_NODE_STATUS_PROTOCOL_DONE: PAIRING_ACTION_DONE,
+    z.ADD_NODE_STATUS_DONE:                        PAIRING_ACTION_DONE,
+    z.ADD_NODE_STATUS_PROTOCOL_DONE:               PAIRING_ACTION_DONE,
 })
 
 HANDLER_TYPE_REMOVE_NODE = (z.REMOVE_NODE_STATUS_TO_STRING, {
-    z.REMOVE_NODE_STATUS_LEARN_READY: PAIRING_ACTION_CONTINUE,
-    z.REMOVE_NODE_STATUS_REMOVING_SLAVE: PAIRING_ACTION_CONTINUE,
-    z.REMOVE_NODE_STATUS_NODE_FOUND: PAIRING_ACTION_CONTINUE,
+    z.REMOVE_NODE_STATUS_LEARN_READY:              PAIRING_ACTION_CONTINUE,
+    z.REMOVE_NODE_STATUS_REMOVING_SLAVE:           PAIRING_ACTION_CONTINUE,
+    z.REMOVE_NODE_STATUS_NODE_FOUND:               PAIRING_ACTION_CONTINUE,
     z.REMOVE_NODE_STATUS_NOT_INCLUSION_CONTROLLER: PAIRING_ACTION_FAILED,
-    z.REMOVE_NODE_STATUS_FAILED: PAIRING_ACTION_FAILED,
-    z.REMOVE_NODE_STATUS_DONE: PAIRING_ACTION_DONE_UPDATE,
-    z.REMOVE_NODE_STATUS_REMOVING_CONTROLLER: PAIRING_ACTION_CONTINUE,
+    z.REMOVE_NODE_STATUS_FAILED:                   PAIRING_ACTION_FAILED,
+    z.REMOVE_NODE_STATUS_DONE:                     PAIRING_ACTION_DONE_UPDATE,
+    z.REMOVE_NODE_STATUS_REMOVING_CONTROLLER:      PAIRING_ACTION_CONTINUE,
 })
 
 HANDLER_TYPE_SET_LEARN_MODE = (z.LEARN_MODE_STATUS_TO_STRING, {
     z.LEARN_MODE_STATUS_STARTED: PAIRING_ACTION_CONTINUE,
-    z.LEARN_MODE_STATUS_FAILED: PAIRING_ACTION_FAILED,
-    z.LEARN_MODE_STATUS_DONE: PAIRING_ACTION_DONE_UPDATE,
+    z.LEARN_MODE_STATUS_FAILED:  PAIRING_ACTION_FAILED,
+    z.LEARN_MODE_STATUS_DONE:    PAIRING_ACTION_DONE_UPDATE,
 })
 
 
@@ -186,24 +179,20 @@ class ControllerProperties:
         return "\n".join(out)
 
     def __str__(self):
-        out = [
-            "home: %08x  node: %02x" % (self.home_id, self.node_id),
-            "versions: %s %x %x (%s)" %
-            (self.version, self.serial_api_version, self.serial_version, self.version_str),
-            "chip: %x.%02x" % (self.chip_type, self.version),
-            "product: %04x %04x %04x  %x" %
-            (self.product[0], self.product[1], self.product[2], self.library_type),
-            "attrs: %s" % repr(self.attrs)
-        ]
-        return "\n".join(out)
+        return "home: %08x  node: %02x" % (self.home_id, self.node_id) + "\n" + \
+               "versions: %s %x %x (%s)" % (self.version, self.serial_api_version, self.serial_version, self.version_str) + "\n" + \
+               "chip: %x.%02x" % (self.chip_type, self.version) + "\n" + \
+               "product: %04x %04x %04x  %x" % (self.product[0], self.product[1], self.product[2], self.library_type) + "\n" + \
+               "attrs: %s" % repr(self.attrs)
+
+
 
 
 class Controller:
-    """Represents the controller node in a Zwave network
+    """
+    Represents the controller node in a Zwave network
     The message_queue is used to send messages to the physical controller and
     the other nodes in the network.
-
-
     """
 
     def __init__(self, driver: Driver, pairing_timeout_secs=15.0):
@@ -222,18 +211,12 @@ class Controller:
         self.routes = {}
 
     def __str__(self):
-        out = [
-            self.StringBasic(),
-            "",
-            self.StringRoutes(),
-        ]
-        return "\n".join(out)
+        return self.StringBasic() + "\n\n" + self.StringRoutes()
 
     def StringBasic(self):
-        return "\n".join([
-            str(self.props),
-            "nodes: %s" % repr(self.nodes),
-            "failed_nodes: %s" % repr(self.failed_nodes)])
+        return str(self.props) + "\n" + \
+               "nodes: %s" % repr(self.nodes) + "\n" + \
+               "failed_nodes: %s" % repr(self.failed_nodes)
 
     def StringRoutes(self):
         out = []
@@ -394,7 +377,7 @@ class Controller:
 
         def Handler(callbackReason, data):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT:
-                logging.error("[%s] Aborted", activity)
+                logging.error("XXX: Aborted %s", activity)
                 event_cb(activity, EVENT_PAIRING_ABORTED, None)
                 return True
             if not data:
@@ -405,29 +388,31 @@ class Controller:
             node = data[2]
             name = stringMap[status]
             a = actions[status]
-            logging.warning("pairing status update: %s", a)
+            logging.warning("===: Pairing status update: %s", a)
+
             if a == PAIRING_ACTION_CONTINUE:
-                logging.warning("[%s] Continue - %s [%d]", activity, name, node)
+                logging.warning("===: Pairing: [%s] Continue - %s [%d]", activity, name, node)
                 event_cb(activity, EVENT_PAIRING_CONTINUE, node)
                 return False
+
             elif a == PAIRING_ACTION_DONE:
-                logging.warning("[%s] Success", node)
+                logging.warning("===: Pairing: [%s] Success", node)
                 event_cb(activity, EVENT_PAIRING_SUCCESS, node)
                 return True
 
             elif a == PAIRING_ACTION_DONE_UPDATE:
-                logging.warning("[%s] Success - updating nodes %s [%d]", activity, name, node)
+                logging.warning("===: Pairing: [%s] Success - updating nodes %s [%d]", activity, name, node)
                 event_cb(activity, EVENT_PAIRING_SUCCESS, node)
                 # This not make much sense for node removals but does not hurt either
                 self.RequestNodeInfo(node)
                 self.Update()
                 return True
             elif a == PAIRING_ACTION_FAILED:
-                logging.warning("[%s] Failure - %s [%d]", activity, name, node)
+                logging.warning("===: Pairing: [%s] Failure - %s [%d]", activity, name, node)
                 event_cb(activity, EVENT_PAIRING_FAILED, node)
                 return True
             else:
-                logging.error("activity unexpected: ${name}")
+                logging.error("XXX: Pairing: activity unexpected: ${name}")
                 return False
 
         return Handler
@@ -458,23 +443,23 @@ class Controller:
                 logging.error("[%s] unknown status %d %s", activity, status, " ".join(["%02x" % i for i in data]))
                 return True
 
-        logging.warning("NeighborUpdate(%d)", node)
         self.driver.sendRequest(z.API_ZW_REQUEST_NODE_NEIGHBOR_UPDATE, [node], timeout=self._pairing_timeout_sec, callback=handler)
+        logging.warning("===: NeighborUpdate(%d)", node)
 
     def AddNodeToNetwork(self, event_cb):
-        logging.warning("AddNodeToNetwork")
         cb = self.MakeFancyReceiver(ACTIVITY_ADD_NODE, HANDLER_TYPE_ADD_NODE, event_cb)
         self.driver.sendRequest(z.API_ZW_ADD_NODE_TO_NETWORK, [z.ADD_NODE_ANY], timeout=self._pairing_timeout_sec, callback=cb)
+        logging.warning("===: AddNodeToNetwork")
 
     def StopAddNodeToNetwork(self, event_cb):
-        logging.warning("StopAddNodeToNetwork")
         cb = self.MakeFancyReceiver(ACTIVITY_STOP_ADD_NODE, HANDLER_TYPE_STOP, event_cb)
         self.driver.sendRequest(z.API_ZW_ADD_NODE_TO_NETWORK, [z.ADD_NODE_STOP], timeout=5, callback=cb)
+        logging.warning("===: StopAddNodeToNetwork")
 
     def RemoveNodeFromNetwork(self, event_cb):
-        logging.warning("RemoveNodeFromNetwork")
         cb = self.MakeFancyReceiver(ACTIVITY_REMOVE_NODE, HANDLER_TYPE_REMOVE_NODE, event_cb)
         self.driver.sendRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, [z.REMOVE_NODE_ANY], cb, timeout=self._pairing_timeout_sec)
+        logging.warning("===: RemoveNodeFromNetwork")
 
     def StopRemoveNodeFromNetwork(self, _):
         # NOTE: this will sometimes result in a "stray request" being sent back:
@@ -497,7 +482,7 @@ class Controller:
         self.driver.sendRequest(z.API_ZW_CONTROLLER_CHANGE, [z.CONTROLLER_CHANGE_STOP])
 
     # ============================================================
-    # ============================================================
+
     def ApplNodeInformation(self):
         """Advertise/change the features of this node"""
 
@@ -546,11 +531,10 @@ class Controller:
         self.UpdateSerialApiGetInitData()
         self.SetTimeouts(1000, 150)
         self.UpdateSucNodeId()
-        # promotes controller to "INITIALIZED"
-        self.ApplNodeInformation()
+        self.ApplNodeInformation()  # sets isInitialised
 
-    def WaitUntilInitialized(self, max_wait=2):
-        logging.info("Controller::WaitUntilInitialized")
+    def WaitUntilInitialized(self, max_wait=5):
+        logging.info("Waiting for the controller to initialise...")
         deadline = time.time() + max_wait
         while self._state != CONTROLLER_STATE_INITIALIZED:
             logging.warning("wait - current Controller state is: %s", self._state)

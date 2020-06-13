@@ -128,86 +128,59 @@ class NodeValues:
         return key in self._values
 
     def Set(self, key: tuple, v: Mapping):
-        if v is None:
-            return
+        if v is None: return
         self._values[key] = time.time(), v
 
     def SetMapEntry(self, key: tuple, subkey, v):
-        if v is None:
-            return
-        m = self._maps.get(key)
-        if m is None:
-            m = {}
-            self._maps[key] = m
-        m[subkey] = time.time(), v
+        if v is None: return
+        if key not in self._maps: self._maps[key] = {}
+        self._maps[key][subkey] = time.time(), v
 
     def Get(self, key: tuple):
-        v = self._values.get(key)
-        if v is not None:
-            return v[1]
-        return None
+        if key not in self._values: return None
+        return self._values[key][1]
 
     def GetMap(self, key: tuple) -> map:
         return self._maps.get(key, {})
 
-    def ColorSwitchSupported(self):
-        v = self.Get(z.ColorSwitch_SupportedReport)
-        if not v:
-            return set()
-        # TODO - double check
-        return BitsToSetWithOffset(v["bits"]["value"], 0)
+    def ColorSwitchSupported(self):  # TODO - double check
+        if z.ColorSwitch_SupportedReport not in self._values: return set()
+        return BitsToSetWithOffset(self._values[z.ColorSwitch_SupportedReport][1]["bits"]["value"], 0)
 
     def SensorSupported(self):
-        v = self.Get(z.SensorMultilevel_SupportedReport)
-        if not v:
-            return set()
-        return BitsToSetWithOffset(v["bits"]["value"], 1)
+        if z.SensorMultilevel_SupportedReport not in self._values: return set()
+        return BitsToSetWithOffset(self._values[z.SensorMultilevel_SupportedReport][1]["bits"]["value"], 1)
 
     def MultiChannelEndPointIds(self):
-        v = self.Get(z.MultiChannel_EndPointReport)
-        if not v:
-            return []
-        return range(1, v["count"] + 1)
+        if z.MultiChannel_EndPointReport not in self._values: return []
+        return range(1, self._values[z.MultiChannel_EndPointReport][1]["count"] + 1)
 
     def MeterSupported(self):
-        v = self.Get(z.Meter_SupportedReport)
-        if not v:
-            return set()
-        return BitsToSetWithOffset(v["scale"], 0)
+        if z.Meter_SupportedReport not in self._values: return set()
+        return BitsToSetWithOffset(self._values[z.Meter_SupportedReport][1]["scale"], 0)
 
     def MeterFlags(self):
-        v = self.Get(z.Meter_SupportedReport)
-        if not v:
-            return None
-        return v["type"]
+        if z.Meter_SupportedReport not in self._values: return None
+        return self._values[z.Meter_SupportedReport][1]["type"]
 
     def GetMultilevelSwitchLevel(self):
-        v = self.Get(z.SwitchMultilevel_Report)
-        if not v:
-            return 0
-        return v["level"]
+        if z.SwitchMultilevel_Report not in self._values: return 0
+        return self._values[z.SwitchMultilevel_Report][1]["level"]
 
     def ProductInfo(self):
         v = self.Get(z.ManufacturerSpecific_Report)
-        if not v:
-            return 0, 0, 0
+        if not v: return 0, 0, 0
         return v.get("manufacturer", 0), v.get("type", 0), v.get("product", 0)
 
     def DeviceType(self):
-        v = self.Get(command.CUSTOM_COMMAND_PROTOCOL_INFO)
-        if not v:
-            return 0, 0, 0
-        return v["device_type"]
+        if command.CUSTOM_COMMAND_PROTOCOL_INFO not in self._values: return 0, 0, 0
+        return self._values[command.CUSTOM_COMMAND_PROTOCOL_INFO]["device_type"]
 
     def AssociationGroupIds(self):
-        m = self.GetMap(z.Association_Report)
-        if m:
-            return m.keys()
+        if z.Association_Report in self._maps: return self._maps[z.Association_Report].keys()
+
         v = self.Get(z.Association_GroupingsReport)
-        if not v or v["count"] in [0, 255]:
-            n = 4
-        else:
-            n = v["count"]
+        n = 4 if not v or v["count"] in [0, 255] else v["count"]
         return list(range(1, n + 1)) + [255]
 
     def HasCommandClass(self, cls):
@@ -217,72 +190,36 @@ class NodeValues:
             return False
         return e != 0
 
-    def NumCommands(self):
-        m = self.GetMap(z.Version_CommandClassReport)
-        return len(m)
+        e = self.GetMap(z.Version_CommandClassReport).get(cls)
+        return e != 0 if e else False
 
     def HasAlternaticeForBasicCommand(self):
         m = self.GetMap(z.Version_CommandClassReport)
         return z.SwitchBinary in m or z.SwitchMultilevel in m
 
-    def Classes(self):
-        m = self.GetMap(z.Version_CommandClassReport)
-        return m.keys()
-
-    def CommandVersions(self):
-        m = self.GetMap(z.Version_CommandClassReport)
-        return [(cls, command.StringifyCommandClass(cls), val)
-                for cls, (_, val) in m.items() if val != 0]
-
-    def Configuration(self):
-        m = self.GetMap(z.Configuration_Report)
-        return [(no, val["size"], val["value"])
-                for no, (_, val) in m.items()]
-
-    def SceneActuatorConfiguration(self):
-        m = self.GetMap(z.SceneActuatorConf_Report)
-        return [(no, val["level"], val["delay"])
-                for no, (_, val) in m.items()]
-
-    def Values(self):
-        return [(key, command.StringifyCommand(key), val)
-                for key, (_, val) in self._values.items()]
-
-    def Sensors(self):
-        m = self.GetMap(z.SensorMultilevel_Report)
-        return [(key, *GetSensorMeta(*key), val["_value"])
-                for key, (_, val) in m.items()]
-
-    def Meters(self):
-        m = self.GetMap(z.Meter_Report)
-        return [(key, *GetMeterMeta(*key), val["_value"])
-                for key, (_, val) in m.items()]
+    def NumCommands(self):                return len(self.GetMap(z.Version_CommandClassReport))
+    def Classes(self):                    return self.GetMap(z.Version_CommandClassReport).keys()
+    def CommandVersions(self):            return [(cls, z.CMD_TO_STRING.get(cls, "UNKNOWN:%d" % cls), val) for cls, (_, val) in self.GetMap(z.Version_CommandClassReport).items() if val != 0]
+    def Configuration(self):              return [(no, val["size"], val["value"]) for no, (_, val) in self.GetMap(z.Configuration_Report).items()]
+    def SceneActuatorConfiguration(self): return [(no, val["level"], val["delay"]) for no, (_, val) in self.GetMap(z.SceneActuatorConf_Report).items()]
+    def Values(self):                     return [(key, command.StringifyCommand(key), val) for key, (_, val) in self._values.items()]
+    def Sensors(self):                    return [(key, *GetSensorMeta(*key), val["_value"]) for key, (_, val) in self.GetMap(z.SensorMultilevel_Report).items()]
+    def Meters(self):                     return [(key, *GetMeterMeta(*key), val["_value"]) for key, (_, val) in self.GetMap(z.Meter_Report).items()]
 
     def ThermostatMode(self):
         v = self.Get(z.ThermostatMode_Report)
-        if v is not None:
-            return (z.ThermostatMode_Report, v["thermo"], *TEMPERATURE_MODES[v["thermo"]])
-        return None
+        return (z.ThermostatMode_Report, v["thermo"], *TEMPERATURE_MODES[v["thermo"]]) if v is not None else None
 
-    def ThermostatSetpoints(self):
-        m = self.GetMap(z.ThermostatSetpoint_Report)
-        return [(key, val['unit'], val["_value"])
-                for key, (_, val) in m.items()]
+    def ThermostatSetpoints(self): return [(key, val['unit'], val["_value"]) for key, (_, val) in self.GetMap(z.ThermostatSetpoint_Report).items()]
 
     def MiscSensors(self):
         out = []
         v = self.Get(z.SwitchMultilevel_Report)
-        if v is not None:
-            out.append((z.SwitchMultilevel_Report, SENSOR_KIND_SWITCH_MULTILEVEL,
-                        "% (dimmer)", v["level"]))
+        if v is not None: out.append((z.SwitchMultilevel_Report, SENSOR_KIND_SWITCH_MULTILEVEL, "% (dimmer)", v["level"]))
         v = self.Get(z.SwitchBinary_Report)
-        if v is not None:
-            out.append((z.SwitchBinary_Report, SENSOR_KIND_SWITCH_BINARY,
-                        "on/off", v["level"]))
+        if v is not None: out.append((z.SwitchBinary_Report, SENSOR_KIND_SWITCH_BINARY, "on/off", v["level"]))
         v = self.Get(z.Battery_Report)
-        if v is not None:
-            out.append((z.Battery_Report, SENSOR_KIND_BATTERY,
-                        "% (battery)", v["level"]))
+        if v is not None: out.append((z.Battery_Report, SENSOR_KIND_BATTERY, "% (battery)", v["level"]))
         return out
 
     def Associations(self):
@@ -297,44 +234,24 @@ class NodeValues:
 
         def foo(m, k):
             e = m.get(k)
-            if e is None:
-                return None
-            return e[1]
+            return e[1] if e is not None else None
 
         out = []
         for n in assocs:
-            out.append((n, foo(groups, n), foo(names, n),
-                        foo(infos, n), foo(lists, n)))
+            out.append((n, foo(groups, n), foo(names, n), foo(infos, n), foo(lists, n)))
         return out
 
     def Versions(self):
         v = self.Get(z.Version_Report)
-        if not v:
-            return 0, 0, 0, 0
-        return v.get("library", 0), v.get("protocol", 0), v.get("firmware", 0), v.get("hardware", 0)
+        return v.get("library", 0), v.get("protocol", 0), v.get("firmware", 0), v.get("hardware", 0) if v else 0, 0, 0, 0
 
     def __str__(self):
-        out = ["  values:"]
-        for x in sorted(self.Values()):
-            out.append("    " + str(x))
-        out.append("  configuration:")
-        for x in sorted(self.Configuration()):
-            out.append("    " + str(x))
-        out.append("  commands:")
-        for x in sorted(self.CommandVersions()):
-            out.append("    " + str(x))
-        out.append("  associations:")
-        for x in sorted(self.Associations()):
-            out.append("    " + str(x))
-        if self.MeterSupported():
-            out.append("  meters:")
-            for x in sorted(self.Meters()):
-                out.append("    " + str(x))
-        if self.SensorSupported():
-            out.append("  sensors:")
-            for x in sorted(self.Sensors()):
-                out.append("    " + str(x))
-        return "\n".join(out)
+        return "Values:        " + " ".join([str(x) for x in sorted(self.Values()         )]) + "\n" + \
+               "Configuration: " + " ".join([str(x) for x in sorted(self.Configuration()  )]) + "\n" + \
+               "Commands:      " + " ".join([str(x) for x in sorted(self.CommandVersions())]) + "\n" + \
+               "Associations:  " + " ".join([str(x) for x in sorted(self.Associations()   )]) + "\n" + \
+              ("Meters:        " + " ".join([str(x) for x in sorted(self.Meters()         )]) + "\n" if self.MeterSupported()  else "") + \
+              ("Sensors:       " + " ".join([str(x) for x in sorted(self.Sensors()        )])        if self.SensorSupported() else "")
 
 
 class NetworkElement:
@@ -745,7 +662,7 @@ class Nodeset:
                 return
 
             if nodeCommand.command == z.MultiChannel_CapabilityReport:
-                # FIXME - can we do this more elegantly?
+                # FIXME - can we do this more elegantly? also, this is not right
                 nodeCommand.commandValues["commands"] = nodeCommand.commandValues["classes"]
                 nodeCommand.commandValues["controls"] = []
 
