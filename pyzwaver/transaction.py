@@ -70,13 +70,10 @@ class Transaction:
 
         # TODO: these are transmission logic and should be moved to driver...
         self.retransmissions = 0
-        self.transactionTimeoutThread = None
 
 
-    def start(self, transactionTimeoutThread):
+    def start(self):
         self.status = self.TransactionStatus.WAIT_FOR_CONFIRMATION
-        self.transactionTimeoutThread = transactionTimeoutThread
-        self.transactionTimeoutThread.start()
         logging.info("==>: Transaction started %s", self.request.toString())
 
     @staticmethod

@@ -127,10 +127,10 @@ class Driver(object):
 
         # Step 2: Start listening to ZWave device
         self.ongoingTransaction:Transaction = None  # singular live transaction being processed
-        self.confirmationTimeoutThread = None       # timeout thread related to the singular live transaction
-        self.openTransactions = []                  # backlog of transactions that might still received requests
+        self.confirmationTimeoutThread = None       # confirmation receipt timeout thread
+        self.transactionTimeoutThread = None        # overall single transaction timeout thread
 
-        self.transactionLock = threading.RLock()    # synchronizes any changes to ongoing/open transcations
+        self.transactionLock = threading.RLock()    # synchronizes any changes to ongoing/open transactions
         self.transactionClearedEvent = threading.Event()   # flags that the live transaction has finished and a new one can be send
 
         self.deviceProcessingThread = threading.Thread(target=self.DeviceProcessingThread, name="DeviceProcessingThread")
@@ -190,7 +190,7 @@ class Driver(object):
 
             if self.ongoingTransaction.retransmissions == 3:
                 logging.error("XXX: Already re-transmitted 3 times - discarding transaction")
-                self.ongoingTransaction.transactionTimeoutThread.cancel()
+                self.transactionTimeoutThread.cancel()
                 self.ongoingTransaction.status = Transaction.TransactionStatus.ABORTED
                 self.ongoingTransaction = None
                 self.transactionClearedEvent.set()
@@ -219,7 +219,7 @@ class Driver(object):
                 self.confirmationTimeoutThread.cancel()
 
             transaction.processTimeout()
-            if transaction in self.openTransactions: self.openTransactions.remove(transaction)
+
             if transaction == self.ongoingTransaction:
                 self.ongoingTransaction = None
                 self.transactionClearedEvent.set()
@@ -234,20 +234,22 @@ class Driver(object):
 
             with self.transactionLock:
                 self.transactionClearedEvent.clear()
-                self.ongoingTransaction = Transaction(dataFrame, callback=callback)
 
-                if timeout == 0.0:
-                    timeout = 2.0 if not self.ongoingTransaction.hasRequests(dataFrame.serialCommand) else 2.5
-                self.confirmationTimeoutThread = threading.Timer(1.5, self.confirmationIssueHandler, [self.ongoingTransaction])
-                transactionTimeoutThread = threading.Timer(timeout, self.transactionTimeoutHandler, [self.ongoingTransaction])
+                time.sleep(0.5)   # slow down send-rate with generous delay, just to be safe and not overwhelm device
 
-                self.ongoingTransaction.start(transactionTimeoutThread)
-                self.writeToDevice(self.ongoingTransaction.request)
+                self.ongoingTransaction = Transaction(serialRequest, callback=callback)
+                self.ongoingTransaction.start()
+
+                self.transactionTimeoutThread = threading.Timer(timeout, self.transactionTimeoutHandler, [self.ongoingTransaction])
+                self.transactionTimeoutThread.start()
+
+                self.confirmationTimeoutThread = threading.Timer(1.5, self.confirmationIssueHandler)
+                self.writeToDevice(DataFrame(self.ongoingTransaction.serialRequest))
                 self.confirmationTimeoutThread.start()
 
             self.transactionClearedEvent.wait()
 
-        logging.info("NewRequestProcessingThread terminated")
+        logging.warning("NewRequestProcessingThread terminated")
 
 
     # This Thread processes all incoming communication from the ZWave device. It manages all
@@ -304,69 +306,26 @@ class Driver(object):
                             logging.warning("X<<: Received non-matching response - ignore")
                             continue
 
-                        if self.ongoingTransaction.ended():
-                            # this response has concluded our ongoing transaction
-                            self.ongoingTransaction.transactionTimeoutThread.cancel()
-                            self.ongoingTransaction = None
-                            self.transactionClearedEvent.set()
-                        elif self.ongoingTransaction.status == Transaction.TransactionStatus.WAIT_FOR_REQUEST:
-                            # we're still expecting follow-on requests and could move this transaction to the
-                            # back-book to be able to send a new one already
-                            # FIXME: de-activated for now, seems to annoy the ZWave device
-                            # self.openTransactions.append(self.ongoingTransaction)
-                            # self.ongoingTransaction = None
-                            # self.transactionClearedEvent.set()
-                            pass
-
-                        continue
-
-                    if dataFrame.frameType == DataFrame.FrameType.REQUEST:
+                    elif dataFrame.frameType == DataFrame.FrameType.REQUEST:
 
                         # distribute unsolicited requests
-                        if dataFrame.serialCommand == z.API_ZW_APPLICATION_UPDATE:
-                            # application updates are handed to the listeners (asynchronously)
-                            logging.info("===: Received application update: %s", dataFrame.toString())
-                            self.callBackQueue.put((dataFrame.serialCommand, dataFrame.serialCommandParameters))
+                        if dataFrame.serialRequest.serialCommand == z.API_ZW_APPLICATION_UPDATE or \
+                           dataFrame.serialRequest.serialCommand == z.API_APPLICATION_COMMAND_HANDLER:
+                            # node updates are handed to the listeners (asynchronously)
+                            logging.info("===: Received asynchronous message: %s", dataFrame.toString())
+                            self.callBackQueue.put(dataFrame.serialRequest)
                             continue
 
-                        if dataFrame.serialCommand == z.API_APPLICATION_COMMAND_HANDLER:
-                            # application commands are handed to the listeners (asynchronously)
-                            if not isinstance(dataFrame, AppCommandFrame):
-                                # we couldn't parse this one --> ignore
-                                logging.error("==X: Received malformed device-request: %s", dataFrame.toString())
-                                continue
-                            logging.info("===: Received device-request: %s", dataFrame.toString())
-                            self.callBackQueue.put((dataFrame.serialCommand, (dataFrame.srcNode, dataFrame.nodeCommand)))
-                            continue
-
-                        # this request should relate to the ongoing or an open back-book transaction, let's find the right one
-                        matchingTransaction = None
-                        if self.ongoingTransaction and self.ongoingTransaction.processRequest(dataFrame):
-                            matchingTransaction = self.ongoingTransaction
-
-                        if not matchingTransaction:  # it's not the ongoing one, let's check other open ones
-                            for transaction in self.openTransactions:
-                                if transaction.processRequest(dataFrame):
-                                    matchingTransaction = transaction
-                                    break
-
-                        if not matchingTransaction:  # nope, don't know what this is
+                        if not self.ongoingTransaction or not self.ongoingTransaction.processRequest(dataFrame.serialRequest):
+                            # nope, don't know what this is
                             logging.warning("X<<: Received non-matching request - ignore: %s", dataFrame.toString())
                             continue
 
-                        if matchingTransaction.ended():
-                            # this request has concluded a transaction
-                            matchingTransaction.transactionTimeoutThread.cancel()   # cancel the timeout thread
-
-                            if self.ongoingTransaction == matchingTransaction:
-                                self.ongoingTransaction = None
-                                self.transactionClearedEvent.set()
-                            else:
-                                self.openTransactions.remove(matchingTransaction)
-
-                            continue
-
-                        continue
+                    if self.ongoingTransaction.ended():
+                        # this response has concluded our ongoing transaction
+                        self.transactionTimeoutThread.cancel()
+                        self.ongoingTransaction = None
+                        self.transactionClearedEvent.set()
 
             else:
                 # we received an ACK/NAK/CAN - let's decide what to do with it
@@ -380,13 +339,13 @@ class Driver(object):
                         continue
 
                     if serialFrame.frameType == serialFrame.FrameType.ACK:
-                        # we received an ACK to our message, great --> cancel time-out time and decide what's next
+                        # we received an ACK to our message, great --> cancel time-out timer and decide what's next
                         self.confirmationTimeoutThread.cancel()
                         self.ongoingTransaction.processACK()
 
                         if self.ongoingTransaction.ended():
                             # the transactions is already done --> clean-up, ready for next one
-                            self.ongoingTransaction.transactionTimeoutThread.cancel()
+                            self.transactionTimeoutThread.cancel()
                             self.ongoingTransaction = None
                             self.transactionClearedEvent.set()
 
@@ -397,6 +356,7 @@ class Driver(object):
                             # self.ongoingTransaction = None
                             # self.transactionClearedEvent.set()
                             pass
+
                         continue
 
                     if serialFrame.frameType == serialFrame.FrameType.NAK or \
