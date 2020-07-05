@@ -63,78 +63,6 @@ ACK_TIMEOUT = 1000
 BYTE_TIMEOUT = 150
 RETRY_TIMEOUT = 40000
 
-API_TO_STRING = ENUM(
-    "API",
-    APPLICATION_COMMAND_HANDLER=0x04,
-    APPLICATION_SLAVE_COMMAND_HANDLER=0xA1,
-    MEMORY_GET_BYTE=0x21,
-
-    PROMISCUOUS_APPLICATION_COMMAND_HANDLER=0xD1,
-
-    SERIAL_API_APPL_NODE_INFORMATION=0x03,
-    SERIAL_API_GET_INIT_DATA=0x02,
-    SERIAL_API_GET_CAPABILITIES=0x07,
-    SERIAL_API_SET_TIMEOUTS=0x06,
-    SERIAL_API_SLAVE_NODE_INFO=0xA0,
-    SERIAL_API_SOFT_RESET=0x08,
-
-    ZW_ADD_NODE_TO_NETWORK=0x4a,
-    ZW_APPLICATION_UPDATE=0x49,
-    ZW_ASSIGN_RETURN_ROUTE=0x46,
-    ZW_ASSIGN_SUC_RETURN_ROUTE=0x51,
-    ZW_CONTROLLER_CHANGE=0x4d,
-    ZW_CREATE_NEW_PRIMARY=0x4c,
-    ZW_DELETE_RETURN_ROUTE=0x47,
-    ZW_DELETE_SUC_RETURN_ROUTE=0x55,
-    ZW_ENABLE_SUC=0x52,
-
-    ZW_GET_CONTROLLER_CAPABILITIES=0x05,
-    ZW_GET_NODE_PROTOCOL_INFO=0x41,
-    ZW_GET_RANDOM=0x1c,
-    ZW_GET_ROUTING_INFO=0x80,
-    ZW_GET_SUC_NODE_ID=0x56,
-    ZW_GET_VERSION=0x15,
-    ZW_GET_VIRTUAL_NODES=0xA5,
-
-    ZW_IS_FAILED_NODE_ID=0x62,
-    ZW_IS_VIRTUAL_NODE=0xA6,
-
-    ZW_MEMORY_GET_ID=0x20,
-    ZW_NEW_CONTROLLER=0x43,
-    ZW_READ_MEMORY=0x23,
-    ZW_REMOVE_FAILED_NODE_ID=0x61,
-    ZW_REMOVE_NODE_FROM_NETWORK=0x4b,
-    ZW_REPLACE_FAILED_NODE=0x63,
-    ZW_REPLICATION_COMMAND_COMPLETE=0x44,
-    ZW_REPLICATION_SEND_DATA=0x45,
-
-    ZW_REQUEST_NETWORK_UPDATE=0x53,
-    ZW_REQUEST_NODE_INFO=0x60,
-    ZW_REQUEST_NODE_NEIGHBOR_UPDATE=0x48,
-    ZW_REQUEST_NODE_NEIGHBOR_UPDATE_OPTIONS=0x5a,
-    ZW_R_F_POWER_LEVEL_SET=0x17,
-
-    ZW_SEND_DATA=0x13,
-    ZW_SEND_NODE_INFORMATION=0x12,
-    ZW_SEND_SLAVE_DATA=0xA3,
-    ZW_SEND_SLAVE_NODE_INFO=0xA2,
-
-    ZW_SET_DEFAULT=0x42,
-    ZW_SET_LEARN_MODE=0x50,
-    ZW_SET_LEARN_NODE_STATE=0x40,
-    ZW_SET_PROMISCUOUS_MODE=0xD0,
-    ZW_SET_SLAVE_LEARN_MODE=0xA4,
-    ZW_SET_SUC_NODE_ID=0x54,
-
-    ZW_SET_R_F_RECEIVE_MODE=0x10,
-    ZW_SEND_DATA_MULTI=0x14,
-    ZW_SEND_DATA_ABORT=0x16,
-    ZW_SEND_DATA_META=0x18,
-    ZW_MEMORY_PUT_BYTE=0x22,
-    ZW_MEMORY_PUT_BUFFER=0x24,
-    ZW_SEND_SUC_ID=0x57,
-    FUNC_ID_LOCK_ROUTE_RESPONSE=0x90,
-)
 # ======================================================================
 TRANSMIT_OPTION_TO_STRING = ENUM(
     "TRANSMIT_OPTION",
@@ -453,38 +381,86 @@ SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE = {}
 SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE = {}
 SERIALCMD_TO_NODEREQUEST_PARSE_TABLE = {}
 
+def SC(serial_cmd, serial_code, controller_request_format=None, node_response_format=None, node_request_format=None):
+    global SERIALCMD_TO_STRING, SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE, SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE, SERIALCMD_TO_NODEREQUEST_PARSE_TABLE
 
-def SC(serialcmd, serial_code, controller_request_format=None, node_response_format=None, node_request_format=None):
-    global SERIALCMD_TO_STRING
-    global SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE
-    global SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE
-    global SERIALCMD_TO_NODEREQUEST_PARSE_TABLE
-
-    globals()[serialcmd] = serial_code
-    SERIALCMD_TO_STRING[serial_code] = serialcmd
+    SERIALCMD_TO_STRING[serial_code] = serial_cmd
 
     if controller_request_format is not None: SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE[serial_code] = controller_request_format.split(",")
-    if node_response_format is not None:      SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE[serial_code]    = node_response_format.split(",")
-    if node_request_format is not None:       SERIALCMD_TO_NODEREQUEST_PARSE_TABLE[serial_code]       = node_request_format.split(",")
+    if node_response_format      is not None: SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE[serial_code]    = node_response_format.split(",")
+    if node_request_format       is not None: SERIALCMD_TO_NODEREQUEST_PARSE_TABLE[serial_code]       = node_request_format.split(",")
 
 
-SC("API_ZW_SEND_DATA",                     0x13, "B{node},SZCMD{command},B{txOptions},B{callback}", "B{retval}", "B{callback},B{txstatus}")
-SC("API_APPLICATION_COMMAND_HANDLER",      0x04, None, None, "B{rxStatus},B{node},SZCMD{command},b{rxRSSIVal},b{securityKey}")
-SC("API_ZW_APPLICATION_UPDATE",            0x49, None, None, "B{status},L{data}")
-SC("API_ZW_REQUEST_NODE_INFO",             0x60, "B{node}", "B{retval}")
-SC("API_ZW_GET_NODE_PROTOCOL_INFO",        0x41, "B{node}", "B{capability},B{security},B{_reserved},B{basic},B{generic},B{specific}")
-SC("API_ZW_IS_FAILED_NODE_ID",             0x62, "B{node}", "B{retval}")
-SC("API_ZW_GET_ROUTING_INFO",              0x80, "B{node},B{removebad},B{removenonreps},B{_mustbezero}", "NDMASK{nodelist}")
-SC("API_ZW_GET_VERSION",                   0x15, "", "L{rest}")
-SC("API_ZW_MEMORY_GET_ID",                 0x20, "", "W{homeidMSW},W{homeidLSW},B{node}")
-SC("API_ZW_GET_CONTROLLER_CAPABILITIES",   0x05, "", "B{retval}")
-SC("API_SERIAL_API_GET_CAPABILITIES",      0x07, "", "W{version},W{manufacturer},W{productType},W{productId},L{functionBitmask}")
-SC("API_SERIAL_API_GET_INIT_DATA",         0x02, "", "B{version},B{capabilities},A{nodemask},B{chipType},B{chipVersion}")
-SC("API_SERIAL_API_SET_TIMEOUTS",          0x06, "B{rxacktimeout},B{rxbytetimeout}", "B{prevrxacktimeout},B{prevrxbytetimeout}")
-SC("API_ZW_GET_SUC_NODE_ID",               0x56, "", "B{sucnodeid}")
-SC("API_SERIAL_API_APPL_NODE_INFORMATION", 0x03, "B{deviceoptions},B{generic},B{specific},A{nodeparm}")
-SC("API_ZW_IS_FAILED_NODE_ID",             0x62, "", "B{retval}")
-SC("API_ZW_GET_RANDOM",                    0x1c, "B{noRandomBytes}", "B{randomGenerationSuccess},a{randomBytes}")
+SC("APPLICATION_COMMAND_HANDLER",             0x04, None, None, "B{rxStatus},B{node},SZCMD{command},b{rxRSSIVal},b{securityKey}")
+SC("APPLICATION_SLAVE_COMMAND_HANDLER",       0xA1, None)
+SC("MEMORY_GET_BYTE",                         0x21, None)
+
+SC("PROMISCUOUS_APPLICATION_COMMAND_HANDLER", 0xD1, None)
+
+SC("SERIAL_API_APPL_NODE_INFORMATION",        0x03, "B{deviceoptions},B{generic},B{specific},A{nodeparm}")
+SC("SERIAL_API_GET_INIT_DATA",                0x02, "", "B{version},B{capabilities},A{nodemask},B{chipType},B{chipVersion}")
+SC("SERIAL_API_GET_CAPABILITIES",             0x07, "", "W{version},W{manufacturer},W{productType},W{productId},L{functionBitmask}")
+SC("SERIAL_API_SET_TIMEOUTS",                 0x06, "B{rxacktimeout},B{rxbytetimeout}", "B{prevrxacktimeout},B{prevrxbytetimeout}")
+SC("SERIAL_API_SLAVE_NODE_INFO",              0xA0, None)
+SC("SERIAL_API_SOFT_RESET",                   0x08, "")
+
+SC("ZW_ADD_NODE_TO_NETWORK",                  0x4a, "B{mode}", None, "B{callback},B{status},B{node},L{rest}")
+SC("ZW_APPLICATION_UPDATE",                   0x49, None, None, "B{status},L{data}")
+SC("ZW_ASSIGN_RETURN_ROUTE",                  0x46, None)
+SC("ZW_ASSIGN_SUC_RETURN_ROUTE",              0x51, None)
+SC("ZW_CONTROLLER_CHANGE",                    0x4d, "B{mode}", None, "B{callback},B{status},B{node},A{rest}")
+SC("ZW_CREATE_NEW_PRIMARY",                   0x4c, None)
+SC("ZW_DELETE_RETURN_ROUTE",                  0x47, None)
+SC("ZW_DELETE_SUC_RETURN_ROUTE",              0x55, None)
+SC("ZW_ENABLE_SUC",                           0x52, None)
+
+SC("ZW_GET_CONTROLLER_CAPABILITIES",          0x05, "", "B{retval}")
+SC("ZW_GET_NODE_PROTOCOL_INFO",               0x41, "B{node}", "B{capability},B{security},B{_reserved},B{basic},B{generic},B{specific}")
+SC("ZW_GET_RANDOM",                           0x1c, "B{noRandomBytes}", "B{randomGenerationSuccess},a{randomBytes}")
+SC("ZW_GET_ROUTING_INFO",                     0x80, "B{node},B{removebad},B{removenonreps},B{_mustbezero}", "NDMASK{nodelist}")
+SC("ZW_GET_SUC_NODE_ID",                      0x56, "", "B{sucnodeid}")
+SC("ZW_GET_VERSION",                          0x15, "", "L{rest}")
+SC("ZW_GET_VIRTUAL_NODES",                    0xA5, None)
+
+SC("ZW_IS_FAILED_NODE_ID",                    0x62, "B{node}", "B{retval}")
+SC("ZW_IS_VIRTUAL_NODE",                      0xA6, None)
+
+SC("ZW_MEMORY_GET_ID",                        0x20, "", "W{homeidMSW},W{homeidLSW},B{node}")
+SC("ZW_NEW_CONTROLLER",                       0x43, None)
+SC("ZW_READ_MEMORY",                          0x23, "W{offset},B{length}", "R{buffer}")
+SC("ZW_REMOVE_FAILED_NODE_ID",                0x61, None)
+SC("ZW_REMOVE_NODE_FROM_NETWORK",             0x4b, "B{mode}", None, "B{callback},B{status},B{node},L{rest}")
+SC("ZW_REPLACE_FAILED_NODE",                  0x63, None)
+SC("ZW_REPLICATION_COMMAND_COMPLETE",         0x44, None)
+SC("ZW_REPLICATION_SEND_DATA",                0x45, None)
+
+SC("ZW_REQUEST_NETWORK_UPDATE",               0x53, None)
+SC("ZW_REQUEST_NODE_INFO",                    0x60, "B{node}", "B{retval}")
+SC("ZW_REQUEST_NODE_NEIGHBOR_UPDATE",         0x48, "B{node}", None, "B{callback},B{status}")
+SC("ZW_REQUEST_NODE_NEIGHBOR_UPDATE_OPTIONS", 0x5a, None)
+SC("ZW_R_F_POWER_LEVEL_SET",                  0x17, None)
+
+SC("ZW_SEND_DATA",                            0x13, "B{node},SZCMD{command},B{txOptions},B{callback}", "B{retval}", "B{callback},B{txstatus}")
+SC("ZW_SEND_NODE_INFORMATION",                0x12, "B{node},B{txOptions}", "B{retVal}", "B{callback},B{txStatus}")
+SC("ZW_SEND_SLAVE_DATA",                      0xA3, None)
+SC("ZW_SEND_SLAVE_NODE_INFO",                 0xA2, None)
+
+SC("ZW_SET_DEFAULT",                          0x42, "", None, "B{callback}")
+SC("ZW_SET_LEARN_MODE",                       0x50, "B{mode}", "B{true}", "B{callback},B{status},B{node},A{nodeparm}")
+SC("ZW_SET_LEARN_NODE_STATE",                 0x40, None)
+SC("ZW_SET_PROMISCUOUS_MODE",                 0xd0, "B{state}")
+SC("ZW_SET_SLAVE_LEARN_MODE",                 0xA4, None)
+SC("ZW_SET_SUC_NODE_ID",                      0x54, None)
+
+SC("ZW_SET_R_F_RECEIVE_MODE",                 0x10, None)
+SC("ZW_SEND_DATA_MULTI",                      0x14, None)
+SC("ZW_SEND_DATA_ABORT",                      0x16, None)
+SC("ZW_SEND_DATA_META",                       0x18, None)
+SC("ZW_MEMORY_PUT_BYTE",                      0x22, None)
+SC("ZW_MEMORY_PUT_BUFFER",                    0x24, None)
+SC("ZW_SEND_SUC_ID",                          0x57, None)
+SC("FUNC_ID_LOCK_ROUTE_RESPONSE",             0x90, None)
+
 
 
 def C(base, cmd, **subs):
@@ -1028,16 +1004,12 @@ def GetGenericCommands(generic):
 ############################################################
 #
 ############################################################
-FORMAT = collections.namedtuple(
-    "FORMAT", ['comment', 'final', 'constint', 'terminator'])
-
-DART_FORMAT = FORMAT(comment="// ", final="final ",
-                     constint="const int ", terminator=";")
-
-PYTHON_FORMAT = FORMAT(comment="# ", final="", constint="", terminator="")
+FORMAT = collections.namedtuple("FORMAT", ['comment', 'final', 'constint', 'terminator'])
+DART_FORMAT   = FORMAT(comment="// ", final="final ", constint="const int ", terminator=";")
+PYTHON_FORMAT = FORMAT(comment="# ",  final="",       constint="",           terminator="")
 
 
-def DumpDartConstants(fmt: FORMAT, string_maps=True):
+def DumpConstants(fmt: FORMAT, string_maps=True):
     def DumpDictEntry2(tag, val):
         print("    0x%02x: '%s'," % (tag, val))
 
@@ -1069,7 +1041,6 @@ def DumpDartConstants(fmt: FORMAT, string_maps=True):
 
     DumpConstAndMap("FIRST", FIRST_TO_STRING)
     DumpConstAndMap("SECOND", SECOND_TO_STRING)
-    DumpConstAndMap("API", API_TO_STRING)
     DumpConstAndMap("CAP_CONTROLLER", CAP_CONTROLLER_TO_STRING)
     DumpConstAndMap("SERIAL_CAP", SERIAL_CAP_TO_STRING)
     DumpConstAndMap("UPDATE_STATE", UPDATE_STATE_TO_STRING)
@@ -1090,7 +1061,19 @@ def DumpDartConstants(fmt: FORMAT, string_maps=True):
     DumpConstAndMap("REMOVE_FAILED_NODE", REMOVE_FAILED_NODE_TO_STRING)
     DumpConstAndMap("REQUEST_NEIGHBOR_UPDATE", REQUEST_NEIGHBOR_UPDATE_TO_STRING)
 
+    print("")
+    print(fmt.comment + "API")
+    vk = sorted([(b, a) for a, b in SERIALCMD_TO_STRING.items()])
+    for v, k in vk:
+        DumpConst("API_" + v, k)
+
     if string_maps:
+        print("")
+        print("%sAPI_TO_STRING = {" % fmt.final)
+        for v, k in vk:
+            DumpDictEntry2(k, "API_" + v)
+        print("}" + fmt.terminator)
+
         print("")
         print(fmt.final + "SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE = {")
         for k, v in sorted(SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE.items()):
@@ -1220,10 +1203,10 @@ def DumpDartConstants(fmt: FORMAT, string_maps=True):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == 'python':
-        DumpDartConstants(PYTHON_FORMAT)
+        DumpConstants(PYTHON_FORMAT)
     elif len(sys.argv) > 1 and sys.argv[1] == 'html':
         print("<html><body><pre>")
-        DumpDartConstants(PYTHON_FORMAT, False)
+        DumpConstants(PYTHON_FORMAT, False)
         print("</pre></body></html>")
     else:
-        DumpDartConstants(DART_FORMAT)
+        DumpConstants(DART_FORMAT)
