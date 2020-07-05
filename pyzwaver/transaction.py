@@ -120,7 +120,7 @@ class Transaction:
 
         more = False
         if self.callback:
-            more = self.callback(self.CallbackReason.REQUEST_RECEIVED, request.serialCommandValues)
+            more = not self.callback(self.CallbackReason.REQUEST_RECEIVED, request.serialCommandValues)
             more = more and COMMAND_RES_REQ_MULTIREQ[self.serialRequest.serialCommand][2]
 
         if not more:

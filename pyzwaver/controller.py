@@ -274,11 +274,11 @@ class Controller:
                                 requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def ReadMemory(self, offset: int, length: int, cb):
-        self.driver.sendRequest(SerialRequest(z.API_ZW_READ_MEMORY, [offset >> 8, offset & 0xff, length]),
+        self.driver.sendRequest(SerialRequest(z.API_ZW_READ_MEMORY, {"offset": offset, "length": length}),
                                 requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(cb))
 
     def SetPromiscuousMode(self, state):
-        self.driver.sendRequest(SerialRequest(z.API_ZW_SET_PROMISCUOUS_MODE, [state]),
+        self.driver.sendRequest(SerialRequest(z.API_ZW_SET_PROMISCUOUS_MODE, {"state": state}),
                                 requestPriority=Driver.RequestPriority.HIGHEST)
 
     def RequestNodeInfo(self, node: int, cb=None):
@@ -326,15 +326,15 @@ class Controller:
 
         def Handler(callbackReason, serialCommandValues):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT:
-                logging.error("XXX: Aborted %s", activity)
+                logging.error("XXX: Timed-out %s", activity)
                 event_cb(activity, EVENT_PAIRING_ABORTED, None)
                 return True
-            if not data:
+            if callbackReason == Transaction.CallbackReason.REQUEST_SENT:
                 event_cb(activity, EVENT_PAIRING_STARTED, None)
                 return True
 
-            status = data[1]
-            node = data[2]
+            status = serialCommandValues["status"]
+            node = serialCommandValues["node"]
             name = stringMap[status]
             a = actions[status]
             logging.warning("===: Pairing status update: %s", a)
@@ -352,7 +352,7 @@ class Controller:
             elif a == PAIRING_ACTION_DONE_UPDATE:
                 logging.warning("===: Pairing: [%s] Success - updating nodes %s [%d]", activity, name, node)
                 event_cb(activity, EVENT_PAIRING_SUCCESS, node)
-                # This not make much sense for node removals but does not hurt either
+                # This does not make much sense for node removals but does not hurt either
                 self.RequestNodeInfo(node)
                 self.Update()
                 return True
@@ -373,26 +373,25 @@ class Controller:
 
         def handler(callbackReason, serialCommandValues):
             if callbackReason == Transaction.CallbackReason.TIMED_OUT:
-                logging.error("[%s] Aborted", activity)
+                logging.error("XXX: NeighborUpdate (%d) aborted/timed-out", node)
                 event_cb(activity, EVENT_PAIRING_ABORTED, node)
                 return True
-            if not data:
+            if callbackReason == Transaction.CallbackReason.REQUEST_SENT:
                 event_cb(activity, EVENT_PAIRING_STARTED, node)
                 return False
 
-            status = data[1]
-            if status == z.REQUEST_NEIGHBOR_UPDATE_STARTED:
+            if serialCommandValues["status"] == z.REQUEST_NEIGHBOR_UPDATE_STARTED:
                 event_cb(activity, EVENT_PAIRING_CONTINUE, node)
                 return False
-            elif status == z.REQUEST_NEIGHBOR_UPDATE_DONE:
+            if serialCommandValues["status"] == z.REQUEST_NEIGHBOR_UPDATE_DONE:
                 event_cb(activity, EVENT_PAIRING_SUCCESS, node)
                 return True
-            elif status == z.REQUEST_NEIGHBOR_UPDATE_FAIL:
+            if serialCommandValues["status"] == z.REQUEST_NEIGHBOR_UPDATE_FAIL:
                 event_cb(activity, EVENT_PAIRING_FAILED, node)
                 return True
-            else:
-                logging.error("[%s] unknown status %d %s", activity, status, " ".join(["%02x" % i for i in data]))
-                return True
+
+            logging.error("XXX: NeighborUpdate (%d) unknown status %s", node, serialCommandValues["status"])
+            return True
 
         logging.warning("===: NeighborUpdate(%d)", node)
         self.driver.sendRequest(SerialRequest(z.API_ZW_REQUEST_NODE_NEIGHBOR_UPDATE, {"node": node}),
@@ -400,43 +399,43 @@ class Controller:
 
     def AddNodeToNetwork(self, event_cb):
         logging.warning("===: AddNodeToNetwork")
-        self.driver.sendRequest(SerialRequest(z.API_ZW_ADD_NODE_TO_NETWORK, [z.ADD_NODE_ANY]),
+        self.driver.sendRequest(SerialRequest(z.API_ZW_ADD_NODE_TO_NETWORK, {"mode": z.ADD_NODE_ANY}),
                                 requestPriority=Driver.RequestPriority.HIGHEST, timeout=self._pairing_timeout_sec,
                                 callback=self.MakeFancyReceiver(ACTIVITY_ADD_NODE, HANDLER_TYPE_ADD_NODE, event_cb))
 
     def StopAddNodeToNetwork(self, event_cb):
         logging.warning("===: StopAddNodeToNetwork")
-        self.driver.sendRequest(SerialRequest(z.API_ZW_ADD_NODE_TO_NETWORK, [z.ADD_NODE_STOP]),
+        self.driver.sendRequest(SerialRequest(z.API_ZW_ADD_NODE_TO_NETWORK, {"mode": z.ADD_NODE_STOP}),
                                 requestPriority=Driver.RequestPriority.HIGHEST, timeout=5,
                                 callback=self.MakeFancyReceiver(ACTIVITY_STOP_ADD_NODE, HANDLER_TYPE_STOP, event_cb))
 
     def RemoveNodeFromNetwork(self, event_cb):
         logging.warning("===: RemoveNodeFromNetwork")
-        self.driver.sendRequest(SerialRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, [z.REMOVE_NODE_ANY]),
+        self.driver.sendRequest(SerialRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, {"mode": z.REMOVE_NODE_ANY}),
                                 requestPriority=Driver.RequestPriority.HIGHEST, timeout=self._pairing_timeout_sec,
                                 callback=self.MakeFancyReceiver(ACTIVITY_REMOVE_NODE, HANDLER_TYPE_REMOVE_NODE, event_cb))
 
-    def StopRemoveNodeFromNetwork(self, _):
+    def StopRemoveNodeFromNetwork(self):
         # NOTE: this will sometimes result in a "stray request" being sent back:
         #  SOF len:07 REQU API_ZW_REMOVE_NODE_FROM_NETWORK:4b cb:64 status:06 00 00 chk:d1
         # We just drop this message on the floor
-        self.driver.sendRequest(SerialRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, [z.REMOVE_NODE_STOP]))
+        self.driver.sendRequest(SerialRequest(z.API_ZW_REMOVE_NODE_FROM_NETWORK, {"mode": z.REMOVE_NODE_STOP}))
 
     def SetLearnMode(self, event_cb):
-        self.driver.sendRequest(SerialRequest(z.API_ZW_SET_LEARN_MODE, [z.LEARN_MODE_NWI]),
+        self.driver.sendRequest(SerialRequest(z.API_ZW_SET_LEARN_MODE, {"mode": z.LEARN_MODE_NWI}),
                                 requestPriority=Driver.RequestPriority.HIGHEST, timeout=self._pairing_timeout_sec,
                                 callback=self.MakeFancyReceiver(ACTIVITY_SET_LEARN_MODE, HANDLER_TYPE_SET_LEARN_MODE, event_cb))
 
-    def StopSetLearnMode(self, _):
-        self.driver.sendRequest(SerialRequest(z.API_ZW_SET_LEARN_MODE, [z.LEARN_MODE_DISABLE]))
+    def StopSetLearnMode(self):
+        self.driver.sendRequest(SerialRequest(z.API_ZW_SET_LEARN_MODE, {"mode": z.LEARN_MODE_DISABLE}))
 
     def ChangeController(self, event_cb):
-        self.driver.sendRequest(SerialRequest(z.API_ZW_CONTROLLER_CHANGE, [z.CONTROLLER_CHANGE_START]),
+        self.driver.sendRequest(SerialRequest(z.API_ZW_CONTROLLER_CHANGE, {"mode": z.CONTROLLER_CHANGE_START}),
                                 requestPriority=Driver.RequestPriority.HIGHEST, timeout=self._pairing_timeout_sec,
                                 callback=self.MakeFancyReceiver(ACTIVITY_CHANGE_CONTROLLER, HANDLER_TYPE_ADD_NODE, event_cb))
 
-    def StopChangeController(self, _):
-        self.driver.sendRequest(SerialRequest(z.API_ZW_CONTROLLER_CHANGE, [z.CONTROLLER_CHANGE_STOP]),
+    def StopChangeController(self):
+        self.driver.sendRequest(SerialRequest(z.API_ZW_CONTROLLER_CHANGE, {"mode": z.CONTROLLER_CHANGE_STOP}),
                                 requestPriority=Driver.RequestPriority.HIGHEST)
 
     # ============================================================
@@ -452,25 +451,27 @@ class Controller:
                                               {"deviceoptions": _APPLICATION_NODEINFO_LISTENING, "generic": 2, "specific": 1,"nodeparm": ""}),
                                 requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
-    def SendNodeInformation(self, dst_node: int, xmit: int, cb):
-        self.driver.sendRequest(SerialRequest(z.API_ZW_SEND_NODE_INFORMATION, [dst_node, xmit]),
+    def SendNodeInformation(self, dst_node: int, txOptions: int, cb):
+        self.driver.sendRequest(SerialRequest(z.API_ZW_SEND_NODE_INFORMATION, {"node": dst_node, "txOptions": txOptions}),
                                 requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(cb))
 
     def SetDefault(self):
         """Factory reset the controller"""
 
         def handler(serialCommandValues):
-            logging.warning("===: SET_DEFAULT results: set default response %s", data)
+            logging.warning("===: SET_DEFAULT completed")
 
         self.driver.sendRequest(SerialRequest(z.API_ZW_SET_DEFAULT),
                                 requestPriority=Driver.RequestPriority.HIGHEST, callback=ignoreTimeoutHandler(handler))
 
     def SoftReset(self):
-        def handler(serialCommandValues):
-            logging.warning("===: SOFT_RESET results: soft reset response %s", data)
+        def handler(callbackReason, serialCommandValues):
+            if callbackReason == Transaction.CallbackReason.REQUEST_SENT:
+                logging.warning("===: SOFT_RESET initiated - waiting 1.5 seconds")
+                time.sleep(1.5)
 
         self.driver.sendRequest(SerialRequest(z.API_SERIAL_API_SOFT_RESET),
-                                requestPriority=Driver.RequestPriority.HIGHEST, timeout=2.0, callback=ignoreTimeoutHandler(handler))
+                                requestPriority=Driver.RequestPriority.HIGHEST, timeout=2.0, callback=handler)
 
 
     def Initialize(self):

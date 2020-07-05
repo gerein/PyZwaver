@@ -20,7 +20,6 @@ node.py provides the Node and NodeSet abstraction
 """
 
 import logging
-import struct
 import time
 from typing import List, Set, Mapping
 from enum import Enum
@@ -299,10 +298,8 @@ class Node(NetworkElement):
     TXoptions = Enum('TXoptions', {'ACK': z.TRANSMIT_OPTION_ACK, 'AUTO_ROUTE': z.TRANSMIT_OPTION_AUTO_ROUTE, 'EXPLORE': z.TRANSMIT_OPTION_EXPLORE, 'LOW_POWER': z.TRANSMIT_OPTION_EXPLORE, 'NO_ROUTE': z.TRANSMIT_OPTION_NO_ROUTE})
 
     def sendCommand(self, nodeCommand:NodeCommand, highPriority=True, txOptions:tuple=None):
-        nodeCommandData = nodeCommand.toDeviceData()
-        
         #FIXME: this check should be in driver (already?)
-        if nodeCommandData is None:
+        if nodeCommand.toDeviceData() is None:
             commandIndex = (nodeCommand.command[0] << 8) + nodeCommand.command[1]
             if commandIndex in z.SUBCMD_TO_STRING:
                 logging.error("XXX: Trying to send command with incomplete values - ignored: %s, %s",
@@ -541,7 +538,7 @@ class Node(NetworkElement):
 
 
 class Endpoint(NetworkElement):
-    def __init__(self, node:Node, endpoint, name=None):
+    def __init__(self, node:Node, endpoint:int, name=None):
         super().__init__(name)
         self.node = node
         self.endpoint = endpoint

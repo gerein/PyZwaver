@@ -376,6 +376,13 @@ class Driver(object):
             serialRequest = self.callBackQueue.get()
             if serialRequest is None: break
 
-            for listener in self.listeners: listener.put(serialRequest)
+            try:
+                for listener in self.listeners: listener.put(serialRequest)
+            except:
+                logging.error("!!!!!!!ERROR!!!!!: node.put threw an exception on %s", serialRequest.toString()) #REMOVEME
+                traceback.print_exc(file=sys.stdout)   #REMOVEME
 
         logging.warning("CallbackThread terminated")
+
+
+import traceback, sys   #REMOVEME
