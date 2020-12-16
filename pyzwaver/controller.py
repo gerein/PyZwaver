@@ -23,10 +23,10 @@ import logging
 import struct
 import time
 
-from pyzwaver import zwave as z
-from pyzwaver.driver import Driver
-from pyzwaver.transaction import Transaction
-from pyzwaver.command import SerialRequest
+from . import zwave as z
+from .driver import Driver
+from .command import SerialRequest
+from .transactionProcessor import TransactionProcessor
 
 _APPLICATION_NODEINFO_LISTENING = 1
 _NUM_NODE_BITFIELD_BYTES = 29
@@ -126,7 +126,7 @@ class ControllerProperties:
 
 def ignoreTimeoutHandler(callback):
     def handler(callbackReason, serialCommandValues):
-        if callbackReason != Transaction.CallbackReason.TIMED_OUT: callback(serialCommandValues)
+        if callbackReason != TransactionProcessor.CallbackReason.TIMED_OUT: callback(serialCommandValues)
     return handler
 
 def ExtractNodes(bits):
@@ -175,7 +175,7 @@ class Controller:
 
     def UpdateVersion(self):
         def handler(callbackReason, serialCommandValues):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT:
+            if callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT:
                 # logging.error("Cannot read controller version. Check serial device.")
                 raise ValueError("Cannot read controller version. Check serial device.")
 
@@ -293,8 +293,8 @@ class Controller:
 
     def RemoveFailedNode(self, node: int, cb):  # FIXME: figure out flow and if it still works correctly, currently not used
         def handler(callbackReason, data):
-            if   callbackReason == Transaction.CallbackReason.TIMED_OUT:         cb(MESSAGE_TIMEOUT)
-            elif callbackReason == Transaction.CallbackReason.RESPONSE_RECEIVED: cb(MESSAGE_NOT_DELIVERED)
+            if   callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT:         cb(MESSAGE_TIMEOUT)
+            elif callbackReason == TransactionProcessor.CallbackReason.RESPONSE_RECEIVED: cb(MESSAGE_NOT_DELIVERED)
             else:
                 return cb(data[1])
 
@@ -307,7 +307,7 @@ class Controller:
     def UpdateRoutingInfo(self):
         def nodeWrappedHandler(node):
             def handler(callbackReason, serialCommandValues):
-                if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+                if callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT: return
                 self.routes[node] = serialCommandValues["nodelist"]
                 logging.info("===: UpdateRoutingInfo results: setting routing info for node %d to: %s",
                              node, self.routes[node])
@@ -325,11 +325,11 @@ class Controller:
         stringMap, actions = receiver_type
 
         def Handler(callbackReason, serialCommandValues):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT:
+            if callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT:
                 logging.error("XXX: Timed-out %s", activity)
                 event_cb(activity, EVENT_PAIRING_ABORTED, None)
                 return True
-            if callbackReason == Transaction.CallbackReason.REQUEST_SENT:
+            if callbackReason == TransactionProcessor.CallbackReason.REQUEST_SENT:
                 event_cb(activity, EVENT_PAIRING_STARTED, None)
                 return True
 
@@ -372,11 +372,11 @@ class Controller:
         activity = "NeighborUpdate",
 
         def handler(callbackReason, serialCommandValues):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT:
+            if callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT:
                 logging.error("XXX: NeighborUpdate (%d) aborted/timed-out", node)
                 event_cb(activity, EVENT_PAIRING_ABORTED, node)
                 return True
-            if callbackReason == Transaction.CallbackReason.REQUEST_SENT:
+            if callbackReason == TransactionProcessor.CallbackReason.REQUEST_SENT:
                 event_cb(activity, EVENT_PAIRING_STARTED, node)
                 return False
 
@@ -466,7 +466,7 @@ class Controller:
 
     def SoftReset(self):
         def handler(callbackReason, serialCommandValues):
-            if callbackReason == Transaction.CallbackReason.REQUEST_SENT:
+            if callbackReason == TransactionProcessor.CallbackReason.REQUEST_SENT:
                 logging.warning("===: SOFT_RESET initiated - waiting 1.5 seconds")
                 time.sleep(1.5)
 

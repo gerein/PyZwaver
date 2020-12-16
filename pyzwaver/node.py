@@ -24,15 +24,15 @@ import time
 from typing import List, Set, Mapping
 from enum import Enum
 
-from pyzwaver import command_helper as ch
-from pyzwaver import zwave as z
-from pyzwaver import command
-from pyzwaver.value import GetSensorMeta, GetMeterMeta, SENSOR_KIND_BATTERY, SENSOR_KIND_SWITCH_MULTILEVEL, \
+from . import command_helper as ch
+from . import zwave as z
+from . import command
+from .value import GetSensorMeta, GetMeterMeta, SENSOR_KIND_BATTERY, SENSOR_KIND_SWITCH_MULTILEVEL, \
     SENSOR_KIND_SWITCH_BINARY, TEMPERATURE_MODES
 
-from pyzwaver.command import SerialRequest, NodeCommand
-from pyzwaver.driver import Driver
-from pyzwaver.transaction import Transaction
+from .command import SerialRequest, NodeCommand
+from .driver import Driver
+from .transactionProcessor import TransactionProcessor
 
 SECURE_MODE = False
 
@@ -322,7 +322,7 @@ class Node(NetworkElement):
     def GetNodeProtocolInfo(self):
         def handler(callbackReason, serialCommandValues):
 
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT:
+            if callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT:
                 logging.error("==X: GetNodeProtocolInfo (node: %s) timed-out", self.getName())
                 return
 
@@ -353,11 +353,11 @@ class Node(NetworkElement):
         logging.info("===: Ping (node: %s): maxTries %d", self.getName(), maxTries)
 
         def failedNodeHandler(callbackReason, serialCommandValues):
-            if callbackReason == Transaction.CallbackReason.TIMED_OUT: return
+            if callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT: return
 
             def _RequestNodeInfo(maxTries):
                 def retryHandler(callbackReason, serialCommandValues):
-                    if callbackReason == Transaction.CallbackReason.TIMED_OUT or serialCommandValues["retval"] == 0:
+                    if callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT or serialCommandValues["retval"] == 0:
                         if maxTries > 1:
                             logging.warning("==X: RequestNodeInfo (node: %s) failed: %s", self.getName(), serialCommandValues["retval"])
                             _RequestNodeInfo(maxTries - 1)
