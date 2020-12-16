@@ -18,7 +18,7 @@ import logging
 import sys
 import traceback
 
-from pyzwaver import zwave as z
+from . import zwave as z
 
 # sensor kinds
 SENSOR_KIND_SWITCH_BINARY = "SwitchBinary"

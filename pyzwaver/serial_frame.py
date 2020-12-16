@@ -16,8 +16,8 @@
 
 from enum import Enum
 
-import pyzwaver.zwave as z
-from pyzwaver.command import SerialRequest
+from .command import SerialRequest
+from . import zwave as z
 
 
 class SerialFrame:

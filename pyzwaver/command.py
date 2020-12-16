@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # Copyright 2016 Robert Muth <robert@muth.org>
 # Copyright 2020 Gerein
 #
@@ -26,7 +25,7 @@ purposes and have no wire representation.
 
 import logging
 
-from pyzwaver import zwave as z
+from . import zwave as z
 
 # The command below prefixed with CUSTOM_COMMAND_* are made up
 CUSTOM_COMMAND_APPLICATION_UPDATE = (256, 1)   # NIFs and MultiChannel_CapabilityReports are transformed into this
@@ -311,8 +310,6 @@ class NodeCommand:
     def toDeviceData(self):
         formatTable = z.SUBCMD_TO_PARSE_TABLE.get((self.command[0] << 8) + self.command[1])
         commandParameters = ParserAssembler(formatTable).assemble(self.commandValues)
-        if commandParameters is None:   # REMOVEME
-            print("XXX: nodeCommand not serializable: " + str(self.command) + ": " + str(self.commandValues))
 
         if commandParameters is None: return None
 

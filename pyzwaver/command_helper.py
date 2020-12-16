@@ -20,7 +20,7 @@ command_helper.py contains helpers for creating commands in dictionary
 form. It also contains list of commands the are sent to the devices
 as part of the device interviewing process.
 """
-from pyzwaver import zwave as z
+from . import zwave as z
 
 # Query device information that changes frequently
 # Note: unsupported commands are discarded
