@@ -139,9 +139,11 @@ class ParserAssembler:
                 else:
                     assert False, "unknown format"
             except:
-                if not format.islower(): print("parsing went wrong " + str(t) + ": " + str(data)) #REMOVEME
-                if not format.islower(): return None  # lower case are optional components
                 value = None
+
+            if value is None and not format.islower():  # lower case are optional components
+                logging.error("XXX: Error parsing incoming data-frame [ %s ] - partly parsed: %s", " ".join(["%02x" % i for i in data]), values)
+                return None
 
             values[name] = value
 
