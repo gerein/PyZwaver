@@ -241,8 +241,11 @@ class TransactionProcessor(ProcessingThread):
     def process_data(self, data):
         serialRequest, timeout, callback = data
 
-        # we have a new outgoing request but need to wait for the previous transaction to finish
-        self.noLiveTransaction.wait()
+        if not self.noLiveTransaction.is_set():
+            # we have a new outgoing request but need to wait for the previous transaction to finish
+            self.noLiveTransaction.wait()
+            # slowing down send-rate a bit
+            time.sleep(0.2)
 
         with self.transactionLock:
             self.noLiveTransaction.clear()
