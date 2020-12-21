@@ -24,43 +24,17 @@ import time
 from typing import List, Set, Mapping
 from enum import Enum
 
-from . import command_helper as ch
+from . import commandQuerySets as cqs
 from . import zwave as z
 from . import command
-from .value import GetSensorMeta, GetMeterMeta, SENSOR_KIND_BATTERY, SENSOR_KIND_SWITCH_MULTILEVEL, \
-    SENSOR_KIND_SWITCH_BINARY, TEMPERATURE_MODES
-
+from .value import GetSensorMeta, GetMeterMeta, SENSOR_KIND_BATTERY, SENSOR_KIND_SWITCH_MULTILEVEL, SENSOR_KIND_SWITCH_BINARY, TEMPERATURE_MODES
 from .command import SerialRequest, NodeCommand
 from .driver import Driver
 from .transactionProcessor import TransactionProcessor
 
 SECURE_MODE = False
-
 if SECURE_MODE:
     from pyzwaver import security
-
-NODE_STATE_NONE        = "00_None"
-NODE_STATE_INCLUDED    = "10_Included"   # discovered means we have the command classes
-NODE_STATE_DISCOVERED  = "20_Discovered" # interviewed means we have received product info (including most static info an versions)
-NODE_STATE_INTERVIEWED = "30_Interviewed"
-NODE_STATE_KEX_GET     = "21_KexGet"
-NODE_STATE_KEX_REPORT  = "22_KexReport"
-NODE_STATE_KEX_SET     = "23_KexSet"
-NODE_STATE_PUBLIC_KEY_REPORT_OTHER = "24_PublicKeyReportOther"
-NODE_STATE_PUBLIC_KEY_REPORT_SELF  = "25_PublicKeyReportSelf"
-
-_NO_VERSION = -1
-_BAD_VERSION = 0
-
-
-def BitsToSetWithOffset(x: int, offset: int) -> Set[int]:
-    out = set()
-    pos = 0
-    while x:
-        if (x & 1) == 1: out.add(pos + offset)
-        pos += 1
-        x >>= 1
-    return out
 
 
 class NodeValues:
@@ -80,29 +54,39 @@ class NodeValues:
         self._values = {}
         self._maps = {}
 
+    def Get(self, key: tuple):
+        if key not in self._values: return None
+        return self._values[key][1]
+
     def Set(self, key: tuple, v: Mapping):
         if v is None: return
         self._values[key] = time.time(), v
+
+    def GetMap(self, key: tuple) -> map:
+        return self._maps.get(key, {})
 
     def SetMapEntry(self, key: tuple, subkey, v):
         if v is None: return
         if key not in self._maps: self._maps[key] = {}
         self._maps[key][subkey] = time.time(), v
 
-    def Get(self, key: tuple):
-        if key not in self._values: return None
-        return self._values[key][1]
-
-    def GetMap(self, key: tuple) -> map:
-        return self._maps.get(key, {})
+    @staticmethod
+    def BitsToSet(x: int) -> Set:
+        out = set()
+        pos = 0
+        while x:
+            if (x & 1) == 1: out.add(pos)
+            pos += 1
+            x >>= 1
+        return out
 
     def ColorSwitchSupported(self):  # TODO - double check
         if z.ColorSwitch_SupportedReport not in self._values: return set()
-        return BitsToSetWithOffset(self._values[z.ColorSwitch_SupportedReport][1]["bits"]["value"], 0)
+        return NodeValues.BitsToSet(self._values[z.ColorSwitch_SupportedReport][1]["bits"]["value"])
 
     def SensorSupported(self):
         if z.SensorMultilevel_SupportedReport not in self._values: return set()
-        return BitsToSetWithOffset(self._values[z.SensorMultilevel_SupportedReport][1]["bits"]["value"], 1)
+        return NodeValues.BitsToSet(self._values[z.SensorMultilevel_SupportedReport][1]["bits"]["value"] << 1) # one offset
 
     def MultiChannelEndPointIds(self):
         if z.MultiChannel_EndPointReport not in self._values: return []
@@ -110,7 +94,7 @@ class NodeValues:
 
     def MeterSupported(self):
         if z.Meter_SupportedReport not in self._values: return set()
-        return BitsToSetWithOffset(self._values[z.Meter_SupportedReport][1]["scale"], 0)
+        return NodeValues.BitsToSet(self._values[z.Meter_SupportedReport][1]["scale"])
 
     def MeterFlags(self):
         if z.Meter_SupportedReport not in self._values: return None
@@ -149,15 +133,14 @@ class NodeValues:
     def CommandVersions(self):            return [(cls, z.CMD_TO_STRING.get(cls, "UNKNOWN:%d" % cls), val) for cls, (_, val) in self.GetMap(z.Version_CommandClassReport).items() if val != 0]
     def Configuration(self):              return [(no, val["size"], val["value"]) for no, (_, val) in self.GetMap(z.Configuration_Report).items()]
     def SceneActuatorConfiguration(self): return [(no, val["level"], val["delay"]) for no, (_, val) in self.GetMap(z.SceneActuatorConf_Report).items()]
-    def Values(self):                     return [(key, command.StringifyCommand(key), val) for key, (_, val) in self._values.items()]
+    def Values(self):                     return [(key, command.StringifyCommand(key), val)  for key, (_, val) in self._values.items()]
     def Sensors(self):                    return [(key, *GetSensorMeta(*key), val["_value"]) for key, (_, val) in self.GetMap(z.SensorMultilevel_Report).items()]
-    def Meters(self):                     return [(key, *GetMeterMeta(*key), val["_value"]) for key, (_, val) in self.GetMap(z.Meter_Report).items()]
+    def Meters(self):                     return [(key, *GetMeterMeta(*key) , val["_value"]) for key, (_, val) in self.GetMap(z.Meter_Report).items()]
+    def ThermostatSetpoints(self):        return [(key, val['unit'], val["_value"]) for key, (_, val) in self.GetMap(z.ThermostatSetpoint_Report).items()]
 
     def ThermostatMode(self):
         v = self.Get(z.ThermostatMode_Report)
         return (z.ThermostatMode_Report, v["thermo"], *TEMPERATURE_MODES[v["thermo"]]) if v is not None else None
-
-    def ThermostatSetpoints(self): return [(key, val['unit'], val["_value"]) for key, (_, val) in self.GetMap(z.ThermostatSetpoint_Report).items()]
 
     def MiscSensors(self):
         out = []
@@ -190,7 +173,7 @@ class NodeValues:
 
     def Versions(self):
         v = self.Get(z.Version_Report)
-        return v.get("library", 0), v.get("protocol", 0), v.get("firmware", 0), v.get("hardware", 0) if v else 0, 0, 0, 0
+        return (v.get("library", 0), v.get("protocol", 0), v.get("firmware", 0), v.get("hardware", 0)) if v else (0, 0, 0, 0)
 
     def __str__(self):
         return "Values:        " + " ".join([str(x) for x in sorted(self.Values()         )]) + "\n" + \
@@ -231,15 +214,18 @@ class Node(NetworkElement):
     Outgoing commands are send to the CommandTranslator.
     """
 
-    def __init__(self, n, driver:Driver, name=None):
+    NodeStatus = Enum('NodeStatus', "NONE DISCOVERED INTERVIEWED KEX_GET KEX_REPORT KEX_SET PUBLIC_KEY_REPORT_OTHER PUBLIC_KEY_REPORT_SELF")
+    # discovered means we have the command classes, interviewed means we have the product info (including most static info and versions)
+
+    def __init__(self, nodeId, driver:Driver, name=None):
         super().__init__(name)
 
-        self.nodeId = n
+        self.nodeId = nodeId
         self.driver = driver
 
         self._controls = set()
 
-        self.state = NODE_STATE_NONE
+        self.status = Node.NodeStatus.NONE
         self.last_contact = 0
 
         self.secure_pair = SECURE_MODE
@@ -250,39 +236,23 @@ class Node(NetworkElement):
         if self.name is None: return str(self.nodeId)
         return self.name + " (" + str(self.nodeId) + ")"
 
-    def IsInterviewed(self):
-        return self.state == NODE_STATE_INTERVIEWED
-
     def IsFailed(self):
         values = self.values.Get(command.CUSTOM_COMMAND_FAILED_NODE)
         return values and values["failed"]
 
-    def __lt__(self, other):
-        return self.nodeId < other.nodeId
-
     def InitializeUnversioned(self, cmd: List[int], controls: List[int], std_cmd: List[int], std_controls: List[int]):
-        self._controls |= set(controls)
-        self._controls |= set(std_controls)
-
-        for k in cmd:
+        self._controls |= set(controls) | set(std_controls)
+        for k in cmd + list(self._controls) + std_cmd:
             if not self.values.HasCommandClass(k):
-                self.values.SetMapEntry(z.Version_CommandClassReport, k, _NO_VERSION)
-        for k in self._controls:
-            if not self.values.HasCommandClass(k):
-                self.values.SetMapEntry(z.Version_CommandClassReport, k, _NO_VERSION)
-        for k in std_cmd:
-            if not self.values.HasCommandClass(k):
-                self.values.SetMapEntry(z.Version_CommandClassReport, k, _NO_VERSION)
-
-    def BasicString(self):
-        return "NODE: %s " % self.getName() +  \
-               "state: %s " % self.state[3:] if not self.IsFailed() else "FAILED" + \
-               "version: %d:%d:%d:%d " % self.values.Versions() + \
-               "product: %04x:%04x:%04x " % self.values.ProductInfo() + \
-               "groups: %d" % len(self.values.AssociationGroupIds())
+                self.values.SetMapEntry(z.Version_CommandClassReport, k, -1)
 
     def __str__(self):
-        return self.BasicString() + "\n" + str(self.values)
+        return "NODE: %s "                % self.getName()                                         + \
+              ("state: %s "               % self.status.name if not self.IsFailed() else "FAILED") + \
+               "version: %d:%d:%d:%d "    % self.values.Versions()                                 + \
+               "product: %04x:%04x:%04x " % self.values.ProductInfo()                              + \
+               "groups: %d"               % len(self.values.AssociationGroupIds()) + "\n"          + \
+               str(self.values)
 
     def sendFilteredCommandBatch(self, commands: List[tuple], highPriority=True):
         for key, values in commands:
@@ -294,21 +264,11 @@ class Node(NetworkElement):
 
             self.sendCommand(NodeCommand(key, values), highPriority=highPriority)
 
-
-    TXoptions = Enum('TXoptions', {'ACK': z.TRANSMIT_OPTION_ACK, 'AUTO_ROUTE': z.TRANSMIT_OPTION_AUTO_ROUTE, 'EXPLORE': z.TRANSMIT_OPTION_EXPLORE, 'LOW_POWER': z.TRANSMIT_OPTION_EXPLORE, 'NO_ROUTE': z.TRANSMIT_OPTION_NO_ROUTE})
+    TXoptions = Enum('TXoptions', {'ACK'     : z.TRANSMIT_OPTION_ACK,     'AUTO_ROUTE': z.TRANSMIT_OPTION_AUTO_ROUTE,
+                                   'EXPLORE' : z.TRANSMIT_OPTION_EXPLORE, 'LOW_POWER' : z.TRANSMIT_OPTION_EXPLORE,
+                                   'NO_ROUTE': z.TRANSMIT_OPTION_NO_ROUTE})
 
     def sendCommand(self, nodeCommand:NodeCommand, highPriority=True, txOptions:tuple=None):
-        #FIXME: this check should be in driver (already?)
-        if nodeCommand.toDeviceData() is None:
-            commandIndex = (nodeCommand.command[0] << 8) + nodeCommand.command[1]
-            if commandIndex in z.SUBCMD_TO_STRING:
-                logging.error("XXX: Trying to send command with incomplete values - ignored: %s, %s",
-                              z.SUBCMD_TO_STRING[commandIndex], nodeCommand.commandValues)
-            else:
-                logging.error("Trying to send unknown command - ignored: %s", nodeCommand.command)
-            return
-
-        #FIXME: txOptions should be its own parsing table?
         if txOptions is None: txOptions = (Node.TXoptions.ACK, Node.TXoptions.AUTO_ROUTE, Node.TXoptions.EXPLORE)
         txData = 0
         for tx in txOptions: txData |= tx.value
@@ -321,7 +281,6 @@ class Node(NetworkElement):
 
     def GetNodeProtocolInfo(self):
         def handler(callbackReason, serialCommandValues):
-
             if callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT:
                 logging.error("==X: GetNodeProtocolInfo (node: %s) timed-out", self.getName())
                 return
@@ -348,121 +307,92 @@ class Node(NetworkElement):
         self.driver.sendRequest(SerialRequest(z.API_ZW_GET_NODE_PROTOCOL_INFO, {"node": self.nodeId}),
                                 requestPriority=Driver.RequestPriority.HIGHEST, callback=handler)
 
+    def RequestNodeInfo(self, triesLeft=3):
+        """Force the generation of a API_ZW_APPLICATION_UPDATE event"""
 
-    def Ping(self, maxTries=3):
-        logging.info("===: Ping (node: %s): maxTries %d", self.getName(), maxTries)
+        def nodeInfoHandler(serialCommandValues):
+            if serialCommandValues["retval"] == 0:
+                if triesLeft > 1:
+                    logging.warning("==X: RequestNodeInfo (node: %s) failed - trying again", self.getName())
+                    self.RequestNodeInfo(triesLeft - 1)
+                else:
+                    logging.error("==X: RequestNodeInfo (node: %s) failed permanently", self.getName())
 
-        def failedNodeHandler(callbackReason, serialCommandValues):
-            if callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT: return
+        logging.info("===: RequestNodeInfo (node: %s, tries left: %d)", self.getName(), triesLeft)
+        self.driver.sendRequest(SerialRequest(z.API_ZW_REQUEST_NODE_INFO, {"node": self.nodeId}),
+                                requestPriority=Driver.RequestPriority.HIGHEST, callback=Driver.ignoreTimeoutHandler(nodeInfoHandler))
 
-            def _RequestNodeInfo(maxTries):
-                def retryHandler(callbackReason, serialCommandValues):
-                    if callbackReason == TransactionProcessor.CallbackReason.TIMED_OUT or serialCommandValues["retval"] == 0:
-                        if maxTries > 1:
-                            logging.warning("==X: RequestNodeInfo (node: %s) failed: %s", self.getName(), serialCommandValues["retval"])
-                            _RequestNodeInfo(maxTries - 1)
-                        else:
-                            logging.error("==X: RequestNodeInfo (node: %s) failed permanently", self.getName())
+    def Ping(self):
+        logging.info("===: Ping (node: %s)", self.getName())
 
-                logging.warning("===: RequestNodeInfo (node: %s, tries left: %d)", self.getName(), maxTries)
-                self.driver.sendRequest(SerialRequest(z.API_ZW_REQUEST_NODE_INFO, {"node": self.nodeId}),
-                                        requestPriority=Driver.RequestPriority.HIGHEST, callback=retryHandler)
-
+        def failedNodeHandler(serialCommandValues):
             failed = serialCommandValues["retval"] != 0
             logging.info("===: Pong (node: %s) is-failed: %s, %s", self.getName(), failed, serialCommandValues["retval"])
             self.values.Set(command.CUSTOM_COMMAND_FAILED_NODE, {"failed": failed})
-            if not failed: _RequestNodeInfo(maxTries)
+            if not failed: self.RequestNodeInfo()
 
         self.GetNodeProtocolInfo()
+        logging.info("===: IsFailedNode (node: %s)", self.getName())
         self.driver.sendRequest(SerialRequest(z.API_ZW_IS_FAILED_NODE_ID, {"node": self.nodeId}),
-                                requestPriority=Driver.RequestPriority.HIGHEST, callback=failedNodeHandler)
-
+                                requestPriority=Driver.RequestPriority.HIGHEST,
+                                callback=Driver.ignoreTimeoutHandler(failedNodeHandler))
 
     def RefreshAllCommandVersions(self):
-        self.sendFilteredCommandBatch(ch.CommandVersionQueries(range(255)), highPriority=False)
+        self.sendFilteredCommandBatch(cqs.CommandVersionQueries(range(255)), highPriority=False)
 
     def RefreshAllSceneActuatorConfigurations(self):
         # append 0 to set current scene at very end
-        self.sendFilteredCommandBatch(ch.SceneActuatorConfiguration(list(range(1, 256)) + [0]), highPriority=False)
+        self.sendFilteredCommandBatch(cqs.SceneActuatorConfiguration(list(range(1, 256)) + [0]), highPriority=False)
 
     def RefreshAllParameters(self):
-        logging.warning("[%d] RefreshAllParameter", self.nodeId)
-        self.sendFilteredCommandBatch(ch.ParameterQueries(range(255)), highPriority=False)
-
-    def RefreshDynamicValues(self):
-        logging.warning("[%d] RefreshDynamic", self.nodeId)
-        c = (ch.DYNAMIC_PROPERTY_QUERIES +
-             ch.SensorMultiLevelQueries(self.values.SensorSupported()) +
-             ch.MeterQueries(self.values.MeterSupported()) +
-             ch.ColorQueries(self.values.ColorSwitchSupported()))
-        self.sendFilteredCommandBatch(c, highPriority=False)
+        logging.info("[%s] RefreshAllParameter", self.getName())
+        self.sendFilteredCommandBatch(cqs.ParameterQueries(range(255)), highPriority=False)
 
     def RefreshStaticValues(self):
-        logging.warning("[%d] RefreshStatic", self.nodeId)
-        c = (ch.STATIC_PROPERTY_QUERIES +
-             ch.CommandVersionQueries(self.values.Classes()) +
-             ch.STATIC_PROPERTY_QUERIES_LAST)
-        self.sendFilteredCommandBatch(c, highPriority=False)
+        logging.info("[%s] RefreshStatic", self.getName())
+        self.sendFilteredCommandBatch(cqs.getStaticCommands(self.values), highPriority=False)
 
-    def RefreshSemiStaticValues(self):
-        logging.warning("[%d] RefreshSemiStatic", self.nodeId)
-        c = (ch.AssociationQueries(self.values.AssociationGroupIds()) +
-             ch.MultiChannelEndpointQueries(self.values.MultiChannelEndPointIds()))
-        self.sendFilteredCommandBatch(c, highPriority=False)
+    def RefreshDynamicValues(self):
+        logging.info("[%s] RefreshDynamic", self.getName())
+        self.sendFilteredCommandBatch(cqs.getDynamicCommands(self.values), highPriority=False)
 
-    def SmartRefresh(self):
-        if   self.state == NODE_STATE_NONE: return
-        elif self.state == NODE_STATE_DISCOVERED: self.RefreshStaticValues()
-        elif self.state == NODE_STATE_INTERVIEWED:
-            self.RefreshSemiStaticValues()
-            self.RefreshDynamicValues()
+    def ChangeStatus(self, new_state):
+        if self.status.value >= new_state.value: return
 
-    def SendNonce(self, seq):
-        # TODO: using a fixed nonce is a total hack - fix this
-        args = {"seq": seq, "mode": 1, "nonce": [0] * 16}
-        logging.warning("Sending Nonce: %s", str(args))
-        self.sendFilteredCommandBatch([(z.Security2_NonceReport, args)])
+        self.status = new_state
+        logging.info("Node %s: Setting status to %s", self.getName(), self.status.name)
+        logging.info(str(self))
 
-    def MaybeChangeState(self, new_state: str):
-        old_state = self.state
-        if old_state >= new_state: return
-
-        logging.warning("[%s] state transition %s -- %s", self.getName(), old_state, new_state)
-        self.state = new_state
-
-        if new_state == NODE_STATE_DISCOVERED:
+        if self.status == Node.NodeStatus.DISCOVERED:
             # if self.values.HasCommandClass(z.MultiChannel):
             #    self.BatchCommandSubmitFilteredFast([(z.MultiChannel_Get, {})])
+            #FIXME: do we need to send multichannel_get (maybe as part of refreshstatic? command classes are filtered anyway)
             if self.secure_pair and (self.values.HasCommandClass(z.Security) or self.values.HasCommandClass(z.Security2)):
-                self.state = NODE_STATE_KEX_GET
+                self.status = Node.NodeStatus.KEX_GET
                 logging.error("[%d] Sending KEX_GET", self.nodeId)
                 self.sendFilteredCommandBatch([(z.Security2_KexGet, {})])
                 return
 
             self.RefreshStaticValues()
 
-        elif new_state == NODE_STATE_INTERVIEWED:
+        elif self.status == Node.NodeStatus.INTERVIEWED:
             self.RefreshDynamicValues()
-            self.RefreshSemiStaticValues()
 
-        elif new_state == NODE_STATE_KEX_REPORT:
+        elif self.status == Node.NodeStatus.KEX_REPORT:
             v = self.values.Get(z.Security2_KexReport)
             # we currently only support S2 Unauthenticated Class
             assert v["keys"] & 1 == 1
             logging.error("[%d] Sending KEX_SET", self.nodeId)
-            args = {'mode': 0, 'schemes': 2, 'profiles': 1, 'keys': v["keys"] & 1}
-            self.sendFilteredCommandBatch([(z.Security2_KexSet, args)])
-            self.state = NODE_STATE_KEX_SET
+            self.sendFilteredCommandBatch([(z.Security2_KexSet, {'mode': 0, 'schemes': 2, 'profiles': 1, 'keys': v["keys"] & 1})])
+            self.status = Node.NodeStatus.KEX_SET
 
-        elif new_state == NODE_STATE_PUBLIC_KEY_REPORT_OTHER:
+        elif self.status == Node.NodeStatus.PUBLIC_KEY_REPORT_OTHER:
             v = self.values.Get(z.Security2_PublicKeyReport)
-            other_public_key = bytes(v["key"])
-            self._tmp_key_ccm, self._tmp_personalization_string, this_public_key = security.CKFD_SharedKey(other_public_key)
+            self._tmp_key_ccm, self._tmp_personalization_string, this_public_key = security.CKFD_SharedKey(bytes(v["key"]))
 
-            print("@@@@@@", len(self._tmp_key_ccm), self._tmp_key_ccm, len(self._tmp_personalization_string), self._tmp_personalization_string)
-            args = {"mode": 1, "key": [int(x) for x in this_public_key]}
-            self.sendFilteredCommandBatch([(z.Security2_PublicKeyReport, args)])
-            self.state = NODE_STATE_PUBLIC_KEY_REPORT_SELF
+            #print("@@@@@@", len(self._tmp_key_ccm), self._tmp_key_ccm, len(self._tmp_personalization_string), self._tmp_personalization_string)
+            self.sendFilteredCommandBatch([(z.Security2_PublicKeyReport, {"mode": 1, "key": [int(x) for x in this_public_key]})])
+            self.status = Node.NodeStatus.PUBLIC_KEY_REPORT_SELF
 
 
     def handleApplicationUpdate(self, values):
@@ -480,17 +410,17 @@ class Node(NetworkElement):
             return
 
         self.InitializeUnversioned(values["commands"], values["controls"], v[1], v[2])
-        self.MaybeChangeState(NODE_STATE_DISCOVERED)
-        if self.state >= NODE_STATE_INTERVIEWED:
+        self.ChangeStatus(Node.NodeStatus.DISCOVERED)
+
+        if self.status.value >= Node.NodeStatus.INTERVIEWED.value:
             self.RefreshDynamicValues()
-            self.RefreshSemiStaticValues()
 
 
     def put(self, nodeCommand:NodeCommand):
         """A Node receives new commands via this function"""
         self.last_contact = time.time()
 
-        if self.state < NODE_STATE_DISCOVERED: self.Ping()
+        if self.status.value < Node.NodeStatus.DISCOVERED.value: self.Ping()
 
         c, v = nodeCommand.command, nodeCommand.commandValues
 
@@ -502,20 +432,25 @@ class Node(NetworkElement):
         elif c == z.AssociationGroupInformation_ListReport: self.values.SetMapEntry(c, v["group"], v["commands"])
         elif c == z.SceneActuatorConf_Report:               self.values.SetMapEntry(c, v["scene"], v)
         elif c == z.UserCode_Report:                        self.values.SetMapEntry(c, v["user"], v)
-        elif c == z.MultiChannel_CapabilityReport:          self.values.SetMapEntry(c, v["endpoint"], v)
         elif c == z.Association_Report:                     self.values.SetMapEntry(c, v["group"], v)
         elif c == z.AssociationGroupInformation_NameReport: self.values.SetMapEntry(c, v["group"], v["name"])
         elif c == z.AssociationGroupInformation_InfoReport:
             for t in v["groups"]:
-                self.values.SetMapEntry(c,t[0], t)
+                self.values.SetMapEntry(c, t[0], t)
+        elif c == z.MultiChannel_CapabilityReport:          self.values.SetMapEntry(c, v["endpoint"], v)
         else: self.values.Set(c, v)
 
-        if   c == z.ManufacturerSpecific_Report: self.MaybeChangeState(NODE_STATE_INTERVIEWED)
-        elif c == z.ZwavePlusInfo_Report:        self.MaybeChangeState(NODE_STATE_INTERVIEWED)
-        elif c == z.Security2_KexReport:         self.MaybeChangeState(NODE_STATE_KEX_REPORT)
-        elif c == z.Security2_PublicKeyReport:   self.MaybeChangeState(NODE_STATE_PUBLIC_KEY_REPORT_OTHER)
-        elif c == z.SceneActuatorConf_Report:    self.values.Set(command.CUSTOM_COMMAND_ACTIVE_SCENE, v)
-        elif c == z.Security2_NonceGet:          self.SendNonce(v["seq"])
+        if   c == z.ManufacturerSpecific_Report or c == z.ZwavePlusInfo_Report: self.ChangeStatus(Node.NodeStatus.INTERVIEWED)   # these are the last of the static queries triggered by DISCOVERED
+        elif c == z.Security2_KexReport:         self.ChangeStatus(Node.NodeStatus.KEX_REPORT)
+        elif c == z.Security2_PublicKeyReport:   self.ChangeStatus(Node.NodeStatus.PUBLIC_KEY_REPORT_OTHER)
+
+        if c == z.SceneActuatorConf_Report:    self.values.Set(command.CUSTOM_COMMAND_ACTIVE_SCENE, v)
+
+        if c == z.Security2_NonceGet:
+            # TODO: using a fixed nonce is a total hack - fix this
+            args = {"seq": v["seq"], "mode": 1, "nonce": [0] * 16}
+            logging.warning("Sending Nonce: %s", str(args))
+            self.sendFilteredCommandBatch([(z.Security2_NonceReport, args)])
 
         super().put(nodeCommand)
 
@@ -645,7 +580,7 @@ class Nodeset:
                     logging.error("XXX: Application update request failed")
 
             elif serialRequest.serialCommandValues["status"] == z.UPDATE_STATE_SUC_ID:
-                logging.warning("===: Application updated: succ id updated: needs work")
+                logging.warning("===: Application updated: suc id updated: needs work")
 
             elif serialRequest.serialCommandValues["status"] == z.UPDATE_STATE_NODE_INFO_RECEIVED:
                 # the node is awake now and/or has changed values

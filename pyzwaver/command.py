@@ -164,77 +164,54 @@ class ParserAssembler:
                 else: continue
 
             try:
-                if   format == "A": parameters += [len(data)] + [int(x) for x in data]
-                elif format == "B": parameters += [data]
-                elif format == "b": parameters += [data]
-                elif format == "C": parameters += [data[0] // 256, data[0] % 256, data[1], data[2], data[3], data[4], data[5]]
-                elif format == "F": parameters += [(data["encoding"] << 5) | len(data["text"])] + data["text"]
+                if   format == "A": value = [len(data)] + [int(x) for x in data]
+                elif format == "B": value = [data]
+                elif format == "b": value = [data]
+                elif format == "C": value = [data[0] // 256, data[0] % 256, data[1], data[2], data[3], data[4], data[5]]
+                elif format == "F": value = [(data["encoding"] << 5) | len(data["text"])] + data["text"]
                 elif format == "G":
-                    for num, profile, event in data: parameters += [num, 0, (profile >> 8) & 255, profile & 255, 0, (event >> 8) & 255, event & 255]
-                elif format == "L": parameters += data
-                elif format == "N": parameters += data
-                elif format == "O": parameters += data
-                elif format == "R": parameters += list(data["value"].to_bytes(data["size"], 'little', signed=False))
-                elif format == "T": pass # doesn't exist
-                elif format == "V": parameters += [data["size]"]] + list(data["value"].to_bytes(data["size"], 'big', signed=False))
-                elif format == "W": parameters += [(data >> 8) & 0xff, data & 0xff]
+                    value = []
+                    for num, profile, event in data: value += [num, 0, (profile >> 8) & 255, profile & 255, 0, (event >> 8) & 255, event & 255]
+                elif format == "L": value = data
+                elif format == "N": value = data
+                elif format == "O": value = data
+                elif format == "R": value = list(data["value"].to_bytes(data["size"], 'little', signed=False))
+                elif format == "V": value = [data["size]"]] + list(data["value"].to_bytes(data["size"], 'big', signed=False))
+                elif format == "W": value = [(data >> 8) & 0xff, data & 0xff]
                 elif format == "t":
-                    parameters += [len(data)]
+                    value = [len(data)]
                     for w in data:
-                        parameters += [(w >> 8) & 0xff, w & 0xff]
+                        value += [(w >> 8) & 0xff, w & 0xff]
                 elif format == "E":
-                    parameters += [data["mode"]]
-                    for kind, datax in data["extensions"]: parameters += [len(data) + 2, kind, datax]
-                    parameters += data["ciphertext"]
+                    value = [data["mode"]]
+                    for kind, datax in data["extensions"]: value += [len(data) + 2, kind, datax]
+                    value += data["ciphertext"]
                 elif format == "M":
                     m = self._createMantissa(data["meterValue"], data["exp"])
-                    parameters += [(data["unit"] & 4) << 7 | data["rate"] << 5 | (data["type"] & 0x1f),
-                                    data["exp"] << 5 | (data["unit"] & 3) << 3 | len(m), m]
+                    value = [(data["unit"] & 4) << 7 | data["rate"] << 5 | (data["type"] & 0x1f),
+                              data["exp"] << 5 | (data["unit"] & 3) << 3 | len(m), m]
                     if "deltaTime" in data and "prevValue" in data:
                         m = self._createMantissa(data["prevValue"], data["exp"])
-                        parameters += [data["deltaTime"] >> 8, data["deltaTime"] & 0xff] + m
+                        value += [data["deltaTime"] >> 8, data["deltaTime"] & 0xff] + m
                 elif format == "X":
                     m = self._createMantissa(data["sensorValue"], data["exp"])
-                    parameters += [data["exp"] << 5 | data["unit"] << 3 | len(m)] + m
+                    value = [data["exp"] << 5 | data["unit"] << 3 | len(m)] + m
                 elif format == "SZCMD":
                     commandOut = data.toDeviceData()
-                    parameters += [len(commandOut)] + commandOut
-                elif format == "CMD": parameters += data.toDeviceData()
+                    value = [len(commandOut)] + commandOut
+                elif format == "CMD": value = data.toDeviceData()
                 else:
                     assert False, "unknown format"
             except:
-                print("assembly went wrong " + str(t) + ": " + str(data)) #REMOVEME
+                value = None
+
+            if value is None and not format.islower():  # lower case are optional components
+                logging.error("XXX: Error assembling outgoing data-frame %s", values)
                 return None
 
+            parameters += value
+
         return parameters
-
-
-# not used at the moment
-def MaybePatchCommand(m):
-    if ((m[0], m[1]) == z.SensorMultilevel_Report and m[2] == 1 and ((m[3] & 7) > len(m) - 4)):
-        x = 1 << 5 | (0 << 3) | 2
-        # [49, 5, 1, 127, 1, 10] => [49, 5, 1, X, 1, 10]
-        logging.error("A fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", ["%02x" % i for i in m], m[3], x)
-        m[3] = x
-
-    if ((m[0], m[1]) == z.SensorMultilevel_Report and m[2] == 1 and (m[3] & 0x10) != 0):
-        x = m[3] & 0xe7
-        logging.error("B fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", ["%02x" % i for i in m], m[3], x)
-        m[3] = x
-
-    if (m[0], m[1]) == z.Version_CommandClassReport and len(m) == 3:
-        m.append(1)
-
-    # if (m[0], m[1]) == z.SensorMultilevel_Report and (m[3] & 7) not in (1, 2, 4):
-    #     size = m[3] & 7
-    #     if size == 3: size = 2
-    #     elif size == 7: size = 1
-    #     elif size == 6: size = 2
-    #     x = m[3] & 0xf8 | size
-    #     logging.error("C fixing up SensorMultilevel_Report %s: [3] %02x-> %02x", Hexify(m), m[3], x)
-    #     m[3] = x
-
-    return m
 
 
 class SerialRequest:
@@ -309,8 +286,9 @@ class NodeCommand:
 
     def toDeviceData(self):
         formatTable = z.SUBCMD_TO_PARSE_TABLE.get((self.command[0] << 8) + self.command[1])
-        commandParameters = ParserAssembler(formatTable).assemble(self.commandValues)
+        if formatTable is None: return None
 
+        commandParameters = ParserAssembler(formatTable).assemble(self.commandValues)
         if commandParameters is None: return None
 
         return list(self.command) + commandParameters

@@ -83,7 +83,7 @@ class DeviceReader(ProcessingThread):
             elif r in z.FIRST_TO_STRING:
                 # we received an ACK/NAK/CAN - let's decide what to do with it
                 serialFrame = ConfirmationFrame.fromDeviceData(r)
-                logging.info("<<<: %s", serialFrame.toString())
+                logging.debug("<<<: %s", serialFrame.toString())
 
                 if not self.driver.transactionProcessor.processIncomingFrame(serialFrame):
                     logging.warning("X<<: Received %s without requiring message confirmation - ignore", serialFrame.toString())
@@ -113,7 +113,7 @@ class DeviceReader(ProcessingThread):
                 return
 
             # good so far - let's send an ACK
-            logging.info("<<<: %s", dataFrame.toString())
+            logging.debug("<<<: %s", dataFrame.toString())
             self.driver.writeToDevice(ConfirmationFrame(ConfirmationFrame.FrameType.ACK))
 
             if not self.driver.transactionProcessor.processIncomingFrame(dataFrame):
@@ -178,13 +178,19 @@ class Driver():
                                         "LOW_FAIR" : MessageQueueOut.PRIO_LOW    ,
                                         "LOWEST"   : MessageQueueOut.PRIO_LOWEST })
 
+    @staticmethod
+    def ignoreTimeoutHandler(callback):
+        def handler(callbackReason, serialCommandValues):
+            if callbackReason != TransactionProcessor.CallbackReason.TIMED_OUT: callback(serialCommandValues)
+        return handler
+
     def sendRequest(self, serialRequest:SerialRequest, requestPriority=RequestPriority.LOWEST, timeout=None, callback=None):
         priority, q = requestPriority, -1
         if type(requestPriority) == tuple: priority, q = requestPriority
 
         if timeout is None:
-            # default transaction timeouts 2.0/2.5 seconds (depending if we're expecting requests back)
-            timeout = 2.5 if TransactionProcessor.hasRequests(serialRequest.serialCommand) else 2.0
+            # default transaction timeouts 2/5 seconds (depending if we're expecting requests back)
+            timeout = 5.0 if TransactionProcessor.hasRequests(serialRequest.serialCommand) else 2.0
 
         self.transactionProcessor.addRequest(priority.value, (serialRequest, timeout, callback), q)
 
@@ -198,8 +204,13 @@ class Driver():
 
     def writeToDevice(self, serialFrame:SerialFrame):
         with self.writeLock:
-            logging.info(">>>: %s", serialFrame.toString())
-            logging.debug(">>>: [ %s ]", " ".join(["%02x" % i for i in serialFrame.toDeviceData()]))
-            self.device.write(serialFrame.toDeviceData())
+            logging.debug(">>>: %s", serialFrame.toString())
+            deviceData = serialFrame.toDeviceData()
+            if deviceData is None:
+                logging.error("XXX: Trying to send invalid frame (incomplete values) - ignored (%s)", serialFrame.toString())
+                return
+
+            logging.debug(">>>: [ %s ]", " ".join(["%02x" % i for i in deviceData]))
+            self.device.write(deviceData)
             self.device.flush()
 
