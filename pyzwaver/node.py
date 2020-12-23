@@ -70,6 +70,27 @@ class NodeValues:
         if key not in self._maps: self._maps[key] = {}
         self._maps[key][subkey] = time.time(), v
 
+    def ProcessApplicationUpdate(self, nodeCommand):
+        c, v = nodeCommand.command, nodeCommand.commandValues
+
+        if   c == z.Version_CommandClassReport:             self.SetMapEntry(c, v["class"], v["version"])
+        elif c == z.Meter_Report:                           self.SetMapEntry(c, (v["value"]["type"], v["value"]["unit"]), v["value"])
+        elif c == z.Configuration_Report:                   self.SetMapEntry(c, v["parameter"], v["value"])
+        elif c == z.SensorMultilevel_Report:                self.SetMapEntry(c, (v["type"], v["value"]["unit"]), v["value"])
+        elif c == z.ThermostatSetpoint_Report:              self.SetMapEntry(c, v["thermo"], v["value"])
+        elif c == z.AssociationGroupInformation_ListReport: self.SetMapEntry(c, v["group"], v["commands"])
+        elif c == z.UserCode_Report:                        self.SetMapEntry(c, v["user"], v)
+        elif c == z.Association_Report:                     self.SetMapEntry(c, v["group"], v)
+        elif c == z.AssociationGroupInformation_NameReport: self.SetMapEntry(c, v["group"], v["name"])
+        elif c == z.AssociationGroupInformation_InfoReport:
+            for t in v["groups"]:
+                self.SetMapEntry(c, t[0], t)
+        elif c == z.SceneActuatorConf_Report:
+            self.SetMapEntry(c, v["scene"], v)
+            self.Set(command.CUSTOM_COMMAND_ACTIVE_SCENE, v)
+        elif c == z.MultiChannel_CapabilityReport:          self.SetMapEntry(c, v["endpoint"], v)  # TODO: check how to handle multichannel_capability report
+        else: self.Set(c, v)
+
     @staticmethod
     def BitsToSet(x: int) -> Set:
         out = set()
@@ -134,9 +155,9 @@ class NodeValues:
     def Configuration(self):              return [(no, val["size"], val["value"]) for no, (_, val) in self.GetMap(z.Configuration_Report).items()]
     def SceneActuatorConfiguration(self): return [(no, val["level"], val["delay"]) for no, (_, val) in self.GetMap(z.SceneActuatorConf_Report).items()]
     def Values(self):                     return [(key, command.StringifyCommand(key), val)  for key, (_, val) in self._values.items()]
-    def Sensors(self):                    return [(key, *GetSensorMeta(*key), val["_value"]) for key, (_, val) in self.GetMap(z.SensorMultilevel_Report).items()]
-    def Meters(self):                     return [(key, *GetMeterMeta(*key) , val["_value"]) for key, (_, val) in self.GetMap(z.Meter_Report).items()]
-    def ThermostatSetpoints(self):        return [(key, val['unit'], val["_value"]) for key, (_, val) in self.GetMap(z.ThermostatSetpoint_Report).items()]
+    def Sensors(self):                    return [(key, *GetSensorMeta(*key), val["sensorValue"]) for key, (_, val) in self.GetMap(z.SensorMultilevel_Report).items()]
+    def Meters(self):                     return [(key, *GetMeterMeta(*key) , val["meterValue"] ) for key, (_, val) in self.GetMap(z.Meter_Report).items()]
+    def ThermostatSetpoints(self):        return [(key, val['unit'], val["sensorValue"]) for key, (_, val) in self.GetMap(z.ThermostatSetpoint_Report).items()]
 
     def ThermostatMode(self):
         v = self.Get(z.ThermostatMode_Report)
@@ -214,7 +235,7 @@ class Node(NetworkElement):
     Outgoing commands are send to the CommandTranslator.
     """
 
-    NodeStatus = Enum('NodeStatus', "NONE DISCOVERED INTERVIEWED KEX_GET KEX_REPORT KEX_SET PUBLIC_KEY_REPORT_OTHER PUBLIC_KEY_REPORT_SELF")
+    NodeStatus = Enum('NodeStatus', "NONE DISCOVERED KEX_GET KEX_REPORT KEX_SET PUBLIC_KEY_REPORT_OTHER PUBLIC_KEY_REPORT_SELF INTERVIEWED")
     # discovered means we have the command classes, interviewed means we have the product info (including most static info and versions)
 
     def __init__(self, nodeId, driver:Driver, name=None):
@@ -253,16 +274,6 @@ class Node(NetworkElement):
                "product: %04x:%04x:%04x " % self.values.ProductInfo()                              + \
                "groups: %d"               % len(self.values.AssociationGroupIds()) + "\n"          + \
                str(self.values)
-
-    def sendFilteredCommandBatch(self, commands: List[tuple], highPriority=True):
-        for key, values in commands:
-            if not self.values.HasCommandClass(key[0]): continue
-
-            # if self._IsSecureCommand(cmd[0], cmd[1]):
-            #    self._secure_messaging.Send(cmd)
-            #    continue
-
-            self.sendCommand(NodeCommand(key, values), highPriority=highPriority)
 
     TXoptions = Enum('TXoptions', {'ACK'     : z.TRANSMIT_OPTION_ACK,     'AUTO_ROUTE': z.TRANSMIT_OPTION_AUTO_ROUTE,
                                    'EXPLORE' : z.TRANSMIT_OPTION_EXPLORE, 'LOW_POWER' : z.TRANSMIT_OPTION_EXPLORE,
@@ -337,6 +348,14 @@ class Node(NetworkElement):
                                 requestPriority=Driver.RequestPriority.HIGHEST,
                                 callback=Driver.ignoreTimeoutHandler(failedNodeHandler))
 
+    # ------------------------------------------------------------------------------------------------------------------
+    # batch updates
+
+    def sendFilteredCommandBatch(self, commands: List[tuple], highPriority=True):
+        for key, values in commands:
+            if self.values.HasCommandClass(key[0]):
+                self.sendCommand(NodeCommand(key, values), highPriority=highPriority)
+
     def RefreshAllCommandVersions(self):
         self.sendFilteredCommandBatch(cqs.CommandVersionQueries(range(255)), highPriority=False)
 
@@ -356,104 +375,86 @@ class Node(NetworkElement):
         logging.info("[%s] RefreshDynamic", self.getName())
         self.sendFilteredCommandBatch(cqs.getDynamicCommands(self.values), highPriority=False)
 
-    def ChangeStatus(self, new_state):
-        if self.status.value >= new_state.value: return
-
-        self.status = new_state
-        logging.info("Node %s: Setting status to %s", self.getName(), self.status.name)
-        logging.info(str(self))
-
-        if self.status == Node.NodeStatus.DISCOVERED:
-            # if self.values.HasCommandClass(z.MultiChannel):
-            #    self.BatchCommandSubmitFilteredFast([(z.MultiChannel_Get, {})])
-            #FIXME: do we need to send multichannel_get (maybe as part of refreshstatic? command classes are filtered anyway)
-            if self.secure_pair and (self.values.HasCommandClass(z.Security) or self.values.HasCommandClass(z.Security2)):
-                self.status = Node.NodeStatus.KEX_GET
-                logging.error("[%d] Sending KEX_GET", self.nodeId)
-                self.sendFilteredCommandBatch([(z.Security2_KexGet, {})])
-                return
-
-            self.RefreshStaticValues()
-
-        elif self.status == Node.NodeStatus.INTERVIEWED:
-            self.RefreshDynamicValues()
-
-        elif self.status == Node.NodeStatus.KEX_REPORT:
-            v = self.values.Get(z.Security2_KexReport)
-            # we currently only support S2 Unauthenticated Class
-            assert v["keys"] & 1 == 1
-            logging.error("[%d] Sending KEX_SET", self.nodeId)
-            self.sendFilteredCommandBatch([(z.Security2_KexSet, {'mode': 0, 'schemes': 2, 'profiles': 1, 'keys': v["keys"] & 1})])
-            self.status = Node.NodeStatus.KEX_SET
-
-        elif self.status == Node.NodeStatus.PUBLIC_KEY_REPORT_OTHER:
-            v = self.values.Get(z.Security2_PublicKeyReport)
-            self._tmp_key_ccm, self._tmp_personalization_string, this_public_key = security.CKFD_SharedKey(bytes(v["key"]))
-
-            #print("@@@@@@", len(self._tmp_key_ccm), self._tmp_key_ccm, len(self._tmp_personalization_string), self._tmp_personalization_string)
-            self.sendFilteredCommandBatch([(z.Security2_PublicKeyReport, {"mode": 1, "key": [int(x) for x in this_public_key]})])
-            self.status = Node.NodeStatus.PUBLIC_KEY_REPORT_SELF
-
+    # ------------------------------------------------------------------------------------------------------------------
+    # handle incoming updates
 
     def handleApplicationUpdate(self, values):
         # Must be z.UPDATE_STATE_NODE_INFO_RECEIVED: the node is awake now and/or has changed values
+        self.last_contact = time.time()
 
-        logging.info("===: Node update (%s): %s", self.getName(), values) #FIXME: print properly
+        logging.info("===: Node update (%s): %s", self.getName(), values)   #FIXME: print properly
 
-        # maybe update generic+specific device
-        if self.values.Get(command.CUSTOM_COMMAND_PROTOCOL_INFO) is None:
-            self.values.Set(command.CUSTOM_COMMAND_PROTOCOL_INFO, {"device_type": (0, values["generic"], values["specific"])})
+        # update generic+specific device
+        self.values.Set(command.CUSTOM_COMMAND_PROTOCOL_INFO, {"device_type": (0, values["generic"], values["specific"])})
 
+        # Initialise unversioned
         v = z.GENERIC_SPECIFIC_DB.get((values["generic"] << 8) + values["specific"])
         if v is None:
-            logging.error("[%d] unknown generic device : %s", self.nodeId, repr(values))
+            logging.error("Node %s: Unknown generic device : %s", self.getName(), repr(values))
             return
+        self._controls |= set(values["controls"]) | set(v[2])
+        for k in values["commands"] + list(self._controls) + v[1]:
+            if not self.values.HasCommandClass(k):
+                self.values.SetMapEntry(z.Version_CommandClassReport, k, -1)   # -1 as dummy
 
-        self.InitializeUnversioned(values["commands"], values["controls"], v[1], v[2])
-        self.ChangeStatus(Node.NodeStatus.DISCOVERED)
+        if self.status.value < Node.NodeStatus.DISCOVERED.value:   # i.e., if status NONE
+            self.status = Node.NodeStatus.DISCOVERED
+            logging.info("Node %s: Discovered node - refreshing static values", self.getName())
+            logging.info(str(self))
 
-        if self.status.value >= Node.NodeStatus.INTERVIEWED.value:
+            if self.secure_pair and self.values.HasCommandClass(z.Security2):
+                self.status = Node.NodeStatus.KEX_GET
+                logging.error("Node %s: Secure node - sending KEX_GET", self.getName())
+                self.sendCommand(NodeCommand(z.Security2_KexGet, {}))
+                # FIXME: this means the node will never get a RefreshStaticValues?
+
+            else:
+                self.RefreshStaticValues()
+
+        elif self.status.value >= Node.NodeStatus.INTERVIEWED.value:
             self.RefreshDynamicValues()
-
 
     def put(self, nodeCommand:NodeCommand):
         """A Node receives new commands via this function"""
         self.last_contact = time.time()
-
-        if self.status.value < Node.NodeStatus.DISCOVERED.value: self.Ping()
+        self.values.ProcessApplicationUpdate(nodeCommand)
 
         c, v = nodeCommand.command, nodeCommand.commandValues
 
-        if   c == z.Version_CommandClassReport:             self.values.SetMapEntry(c, v["class"], v["version"])
-        elif c == z.Meter_Report:                           self.values.SetMapEntry(c, (v["value"]["type"], v["value"]["unit"]), v["value"])
-        elif c == z.Configuration_Report:                   self.values.SetMapEntry(c, v["parameter"], v["value"])
-        elif c == z.SensorMultilevel_Report:                self.values.SetMapEntry(c, (v["type"], v["value"]["unit"]), v["value"])
-        elif c == z.ThermostatSetpoint_Report:              self.values.SetMapEntry(c, v["thermo"], v["value"])
-        elif c == z.AssociationGroupInformation_ListReport: self.values.SetMapEntry(c, v["group"], v["commands"])
-        elif c == z.SceneActuatorConf_Report:               self.values.SetMapEntry(c, v["scene"], v)
-        elif c == z.UserCode_Report:                        self.values.SetMapEntry(c, v["user"], v)
-        elif c == z.Association_Report:                     self.values.SetMapEntry(c, v["group"], v)
-        elif c == z.AssociationGroupInformation_NameReport: self.values.SetMapEntry(c, v["group"], v["name"])
-        elif c == z.AssociationGroupInformation_InfoReport:
-            for t in v["groups"]:
-                self.values.SetMapEntry(c, t[0], t)
-        elif c == z.MultiChannel_CapabilityReport:          self.values.SetMapEntry(c, v["endpoint"], v)
-        else: self.values.Set(c, v)
+        if self.status.value < Node.NodeStatus.DISCOVERED.value: self.Ping()
 
-        if   c == z.ManufacturerSpecific_Report or c == z.ZwavePlusInfo_Report: self.ChangeStatus(Node.NodeStatus.INTERVIEWED)   # these are the last of the static queries triggered by DISCOVERED
-        elif c == z.Security2_KexReport:         self.ChangeStatus(Node.NodeStatus.KEX_REPORT)
-        elif c == z.Security2_PublicKeyReport:   self.ChangeStatus(Node.NodeStatus.PUBLIC_KEY_REPORT_OTHER)
+        if (c == z.ManufacturerSpecific_Report or c == z.ZwavePlusInfo_Report) and self.status.value < Node.NodeStatus.INTERVIEWED.value:
+            # these are the last of the static queries triggered by DISCOVERED
+            self.status = Node.NodeStatus.INTERVIEWED
+            logging.info("Node %s: Interviewed node for static values - now refreshing dynamic values", self.getName())
+            logging.info(str(self))
+            self.RefreshDynamicValues()
 
-        if c == z.SceneActuatorConf_Report:    self.values.Set(command.CUSTOM_COMMAND_ACTIVE_SCENE, v)
+        elif c == z.Security2_KexReport and self.status.value < Node.NodeStatus.KEX_REPORT.value:
+            self.status = Node.NodeStatus.KEX_SET
+            logging.info("Node %s: Sending KEX_SET", self.getName())
+            logging.info(str(self))
 
-        if c == z.Security2_NonceGet:
-            # TODO: using a fixed nonce is a total hack - fix this
-            args = {"seq": v["seq"], "mode": 1, "nonce": [0] * 16}
-            logging.warning("Sending Nonce: %s", str(args))
-            self.sendFilteredCommandBatch([(z.Security2_NonceReport, args)])
+            report = self.values.Get(z.Security2_KexReport)
+            assert report["keys"] & 1 == 1   # we currently only support S2 Unauthenticated Class
+
+            self.sendCommand(NodeCommand(z.Security2_KexSet, {'mode': 0, 'schemes': 2, 'profiles': 1, 'keys': report["keys"] & 1}))
+
+        elif c == z.Security2_PublicKeyReport and self.status.value < Node.NodeStatus.PUBLIC_KEY_REPORT_OTHER.value:
+            self.status = Node.NodeStatus.PUBLIC_KEY_REPORT_OTHER
+            logging.info("Node %s: Received PublicKeyReport - setting status PUBLIC_KEY_REPORT_OTHER", self.getName())
+            logging.info(str(self))
+
+            self._tmp_key_ccm, self._tmp_personalization_string, this_public_key = security.CKFD_SharedKey(bytes(self.values.Get(z.Security2_PublicKeyReport)["key"]))
+
+            #print("@@@@@@", len(self._tmp_key_ccm), self._tmp_key_ccm, len(self._tmp_personalization_string), self._tmp_personalization_string)
+            self.sendCommand(NodeCommand(z.Security2_PublicKeyReport, {"mode": 1, "key": [int(x) for x in this_public_key]}))
+
+        elif c == z.Security2_NonceGet:
+            logging.warning("Node %s: Sending nonce", self.getName())
+            self.sendCommand(NodeCommand(z.Security2_NonceReport, {"seq": v["seq"], "mode": 1, "nonce": [0] * 16}))   # TODO: using a fixed nonce is a total hack - fix this
 
         super().put(nodeCommand)
-
 
         # elif a == command.ACTION_STORE_SCENE:
         #    if value[0] == 0:
@@ -497,24 +498,7 @@ class Endpoint(NetworkElement):
 
 
     def put(self, nodeCommand):
-        c, v = nodeCommand.command, nodeCommand.commandValues
-
-        if   c == z.Version_CommandClassReport:             self.values.SetMapEntry(c, v["class"], v["version"])
-        elif c == z.Meter_Report:                           self.values.SetMapEntry(c, (v["value"]["type"], v["value"]["unit"]), v["value"])
-        elif c == z.Configuration_Report:                   self.values.SetMapEntry(c, v["parameter"], v["value"])
-        elif c == z.SensorMultilevel_Report:                self.values.SetMapEntry(c, (v["type"], v["value"]["unit"]), v["value"])
-        elif c == z.ThermostatSetpoint_Report:              self.values.SetMapEntry(c, v["thermo"], v["value"])
-        elif c == z.AssociationGroupInformation_ListReport: self.values.SetMapEntry(c, v["group"], v["commands"])
-        elif c == z.SceneActuatorConf_Report:               self.values.SetMapEntry(c, v["scene"], v)
-        elif c == z.UserCode_Report:                        self.values.SetMapEntry(c, v["user"], v)
-        elif c == z.MultiChannel_CapabilityReport:          self.values.SetMapEntry(c, v["endpoint"], v)
-        elif c == z.Association_Report:                     self.values.SetMapEntry(c, v["group"], v)
-        elif c == z.AssociationGroupInformation_NameReport: self.values.SetMapEntry(c, v["group"], v["name"])
-        elif c == z.AssociationGroupInformation_InfoReport:
-            for t in v["groups"]:
-                self.values.SetMapEntry(c,t[0], t)
-        else: self.values.Set(c, v)
-
+        self.values.ProcessApplicationUpdate(nodeCommand)
         super().put(nodeCommand)
 
 
@@ -558,6 +542,7 @@ class Nodeset:
     def put(self, serialRequest:SerialRequest):
         if serialRequest.serialCommand == z.API_APPLICATION_COMMAND_HANDLER:
             srcNode, nodeCommand = serialRequest.serialCommandValues["node"], serialRequest.serialCommandValues["command"]
+            logging.info("<<<: Received node %s command: %s", self.getNode(srcNode).getName(), nodeCommand.toString())
 
             if nodeCommand.command == z.MultiChannel_CmdEncap:
                 self.getEndpoint(srcNode, nodeCommand.commandValues["src"]).put(nodeCommand.commandValues["command"])
@@ -599,6 +584,7 @@ class Nodeset:
                         continue
                     values["controls" if seen_marker else "commands"].append(i)
 
+                logging.info("<<<: Received node %s update: %s", self.getNode(srcNode).getName(), values)
                 self.getNode(srcNode).handleApplicationUpdate(values)
 
             else:
