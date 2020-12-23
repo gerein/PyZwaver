@@ -39,10 +39,6 @@ like 'dialout'.)
 
 A command line tool for doing tasks alike parining and unpairing
 
-### example_mqtt.py
-
-A mqtt client which forwards commands - both ways.
-
 ### example_webserver.py
 
 A simple webserver which can be launched like so:
@@ -61,10 +57,6 @@ Rudimentary test can be run with
 ````
 make tests
 ````
-
-## Architectural Overview
-
-see [Architectural Overview](ARCHITECTURE.md)
 
 ## Supporting New Command Classes
 
@@ -99,11 +91,7 @@ example_webserver.py depends on:
 
 * Static/list.min.js
   http://www.listjs.com/
-
-example_mqtt.py depends on:
-
-* paho.mqtt
-  https://pypi.org/project/paho-mqtt/
+  
   
 ## Author
 

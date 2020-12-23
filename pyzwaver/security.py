@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # Copyright 2016 Robert Muth <robert@muth.org>
 #
 # This program is free software; you can redistribute it and/or

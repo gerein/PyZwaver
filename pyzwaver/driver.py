@@ -168,10 +168,8 @@ class Driver():
         self.transactionProcessor = TransactionProcessor(self)
         self.transactionProcessor.start()
 
-
     def addListener(self, l):
         self.incomingRequestProcessor.addListener(l)
-
 
     RequestPriority = Enum("Priority", {"HIGHEST"  : MessageQueueOut.PRIO_HIGHEST,
                                         "HIGH_FAIR": MessageQueueOut.PRIO_HIGH   ,
@@ -194,13 +192,11 @@ class Driver():
 
         self.transactionProcessor.addRequest(priority.value, (serialRequest, timeout, callback), q)
 
-
     def shutdown(self):
         logging.warning("Terminating driver")
         self.transactionProcessor.shutdown()
         self.incomingRequestProcessor.shutdown()
         self.deviceReader.shutdown()
-
 
     def writeToDevice(self, serialFrame:SerialFrame):
         with self.writeLock:

@@ -28,37 +28,30 @@ import logging
 from . import zwave as z
 
 # The command below prefixed with CUSTOM_COMMAND_* are made up
-CUSTOM_COMMAND_APPLICATION_UPDATE = (256, 1)   # NIFs and MultiChannel_CapabilityReports are transformed into this
 CUSTOM_COMMAND_PROTOCOL_INFO      = (256, 2)   # protocol info messages are transformed into this
 CUSTOM_COMMAND_ACTIVE_SCENE       = (256, 3)   # unused
 CUSTOM_COMMAND_FAILED_NODE        = (256, 4)   # if API_ZW_IS_FAILED_NODE_ID reports a failed node
 
 _CUSTOM_COMMAND_STRINGS = {
-    CUSTOM_COMMAND_ACTIVE_SCENE:       "_Active_Scene",
-    CUSTOM_COMMAND_APPLICATION_UPDATE: "_Application_Update",
     CUSTOM_COMMAND_PROTOCOL_INFO:      "_ProtocolInfo",
+    CUSTOM_COMMAND_ACTIVE_SCENE:       "_Active_Scene",
     CUSTOM_COMMAND_FAILED_NODE:        "_FailedNode"
 }
 
-
 def IsCustom(key):
     return key in _CUSTOM_COMMAND_STRINGS
-
 
 def StringifyCommand(key):
     if key in _CUSTOM_COMMAND_STRINGS: return _CUSTOM_COMMAND_STRINGS[key]
     if (key[0] << 8) + key[1] in z.SUBCMD_TO_STRING: return z.SUBCMD_TO_STRING[(key[0] << 8) + key[1]]
     return "Unknown:%02x:%02x" % (key[0], key[1])
 
-
 def NodeDescription(basic_generic_specific):
-    k = basic_generic_specific[1] * 256 + basic_generic_specific[2]
-    v = z.GENERIC_SPECIFIC_DB.get(k)
+    v = z.GENERIC_SPECIFIC_DB.get(basic_generic_specific[1] * 256 + basic_generic_specific[2])
     if v is None:
         logging.error("unknown generic device : %s", str(basic_generic_specific))
         return "unknown device_description: %s" % str(basic_generic_specific)
     return v[0]
-
 
 
 class ParserAssembler:
@@ -66,14 +59,13 @@ class ParserAssembler:
     def __init__(self, formatTable):
         self.formatTable = formatTable
 
-
     def parse(self, data):
         if self.formatTable is None: return None
         values = {}
 
-        for t in self.formatTable:
-            mark = t.index("{")
-            format, name = t[0:mark], t[mark + 1:-1]
+        for valueFormat in self.formatTable:
+            dividerIndex = valueFormat.index("{")
+            format, valueName = valueFormat[0:dividerIndex], valueFormat[dividerIndex + 1:-1]
 
             try:
                 if   format == "A": value, data = bytes(data[1:1 + data[0]]), data[1 + data[0]:]
@@ -140,15 +132,17 @@ class ParserAssembler:
             except:
                 value = None
 
-            if value is None and not format.islower():  # lower case are optional components
+            if value is None:
+                if format.islower(): break   # lower case are optional components
                 logging.error("XXX: Error parsing incoming data-frame [ %s ] - partly parsed: %s", " ".join(["%02x" % i for i in data]), values)
                 return None
 
-            values[name] = value
+            values[valueName] = value
 
         return values
 
-    def _createMantissa(self, value, exp):
+    @staticmethod
+    def _createMantissa(value, exp):
         v = int(value * pow(10, exp))
         return v.to_bytes(max((v.bit_length() + 7) // 8, 1), 'big', signed=True)
 
@@ -158,58 +152,58 @@ class ParserAssembler:
         for t in self.formatTable:
             mark = t.index("{")
             format, name = t[0:mark], t[mark + 1:-1]
-            data = values.get(name)
-            if data is None:
-                if not format.islower(): return None  # lower case are optional components
-                else: continue
+            value = values.get(name)
 
             try:
-                if   format == "A": value = [len(data)] + [int(x) for x in data]
-                elif format == "B": value = [data]
-                elif format == "b": value = [data]
-                elif format == "C": value = [data[0] // 256, data[0] % 256, data[1], data[2], data[3], data[4], data[5]]
-                elif format == "F": value = [(data["encoding"] << 5) | len(data["text"])] + data["text"]
+                if value is None:
+                    if format.islower(): continue  # lower case are optional components
+                    else: raise Exception
+                if   format == "A": data = [len(value)] + [int(x) for x in value]
+                elif format == "B": data = [value]
+                elif format == "b": data = [value]
+                elif format == "C": data = [value[0] // 256, value[0] % 256, value[1], value[2], value[3], value[4], value[5]]
+                elif format == "F": data = [(value["encoding"] << 5) | len(value["text"])] + value["text"]
                 elif format == "G":
-                    value = []
-                    for num, profile, event in data: value += [num, 0, (profile >> 8) & 255, profile & 255, 0, (event >> 8) & 255, event & 255]
-                elif format == "L": value = data
-                elif format == "N": value = data
-                elif format == "O": value = data
-                elif format == "R": value = list(data["value"].to_bytes(data["size"], 'little', signed=False))
-                elif format == "V": value = [data["size]"]] + list(data["value"].to_bytes(data["size"], 'big', signed=False))
-                elif format == "W": value = [(data >> 8) & 0xff, data & 0xff]
+                    data = []
+                    for num, profile, event in value: data += [num, 0, (profile >> 8) & 255, profile & 255, 0, (event >> 8) & 255, event & 255]
+                elif format == "L": data = value
+                elif format == "N": data = value
+                elif format == "O": data = value
+                elif format == "R": data = list(value["value"].to_bytes(value["size"], 'little', signed=False))
+                elif format == "V": data = [value["size]"]] + list(value["value"].to_bytes(value["size"], 'big', signed=False))
+                elif format == "W": data = [(value >> 8) & 0xff, value & 0xff]
                 elif format == "t":
-                    value = [len(data)]
-                    for w in data:
-                        value += [(w >> 8) & 0xff, w & 0xff]
+                    data = [len(value)]
+                    for w in value:
+                        data += [(w >> 8) & 0xff, w & 0xff]
                 elif format == "E":
-                    value = [data["mode"]]
-                    for kind, datax in data["extensions"]: value += [len(data) + 2, kind, datax]
-                    value += data["ciphertext"]
+                    data = [value["mode"]]
+                    for kind, datax in value["extensions"]: data += [len(value) + 2, kind, datax]
+                    data += value["ciphertext"]
                 elif format == "M":
-                    m = self._createMantissa(data["meterValue"], data["exp"])
-                    value = [(data["unit"] & 4) << 7 | data["rate"] << 5 | (data["type"] & 0x1f),
-                              data["exp"] << 5 | (data["unit"] & 3) << 3 | len(m), m]
-                    if "deltaTime" in data and "prevValue" in data:
-                        m = self._createMantissa(data["prevValue"], data["exp"])
-                        value += [data["deltaTime"] >> 8, data["deltaTime"] & 0xff] + m
+                    m = self._createMantissa(value["meterValue"], value["exp"])
+                    data = [(value["unit"] & 4) << 7 | value["rate"] << 5 | (value["type"] & 0x1f),
+                              value["exp"] << 5 | (value["unit"] & 3) << 3 | len(m), m]
+                    if "deltaTime" in value and "prevValue" in value:
+                        m = self._createMantissa(value["prevValue"], value["exp"])
+                        data += [value["deltaTime"] >> 8, value["deltaTime"] & 0xff] + m
                 elif format == "X":
-                    m = self._createMantissa(data["sensorValue"], data["exp"])
-                    value = [data["exp"] << 5 | data["unit"] << 3 | len(m)] + m
+                    m = self._createMantissa(value["sensorValue"], value["exp"])
+                    data = [value["exp"] << 5 | value["unit"] << 3 | len(m)] + m
                 elif format == "SZCMD":
-                    commandOut = data.toDeviceData()
-                    value = [len(commandOut)] + commandOut
-                elif format == "CMD": value = data.toDeviceData()
+                    commandOut = value.toDeviceData()
+                    data = [len(commandOut)] + commandOut
+                elif format == "CMD": data = value.toDeviceData()
                 else:
                     assert False, "unknown format"
             except:
-                value = None
+                data = None
 
-            if value is None and not format.islower():  # lower case are optional components
+            if data is None:
                 logging.error("XXX: Error assembling outgoing data-frame %s", values)
                 return None
 
-            parameters += value
+            parameters += data
 
         return parameters
 

@@ -45,7 +45,6 @@ class ProcessingThread(threading.Thread):
     def run(self):
         logging.info("Starting thread '" + self.__class__.__name__ + "'")
         while not self.shutdownFlag.is_set():
-            #REMOVEME print("Is-Alive: " + self.__class__.__name__)
 
             if time.time() - self.lastIsAliveTimestamp > 60 * 60:
                 logging.info("Is-Alive ping: thread '" + self.__class__.__name__ + "'")
@@ -303,7 +302,7 @@ class TransactionProcessor(ProcessingThread):
                         # the transactions is already done --> clean-up, ready for next one
                         self.transactionStatus = self.TransactionStatus.COMPLETED
                         self.transactionTimeoutThread.cancel()
-                        logging.info("<==: Transaction completed %s", self.transactionRequest.toString())
+                        logging.debug("<==: Transaction completed %s", self.transactionRequest.toString())
 
                         if self.transactionCallback: self.transactionCallback(self.CallbackReason.REQUEST_SENT, None)
 
@@ -326,7 +325,7 @@ class TransactionProcessor(ProcessingThread):
                     # the transactions is already done --> clean-up, ready for next one
                     self.transactionStatus = self.TransactionStatus.COMPLETED
                     self.transactionTimeoutThread.cancel()
-                    logging.info("<==: Transaction completed %s", self.transactionRequest.toString())
+                    logging.debug("<==: Transaction completed %s", self.transactionRequest.toString())
 
                     if self.transactionCallback: self.transactionCallback(self.CallbackReason.RESPONSE_RECEIVED, frame.serialRequest.serialCommandValues)
 
@@ -348,7 +347,7 @@ class TransactionProcessor(ProcessingThread):
                     # the transactions is already done --> clean-up, ready for next one
                     self.transactionStatus = self.TransactionStatus.COMPLETED
                     self.transactionTimeoutThread.cancel()
-                    logging.info("<==: Transaction completed %s", self.transactionRequest.toString())
+                    logging.debug("<==: Transaction completed %s", self.transactionRequest.toString())
 
                     self.noLiveTransaction.set()
 

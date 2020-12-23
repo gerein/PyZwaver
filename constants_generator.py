@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 # Copyright 2016 Robert Muth <robert@muth.org>
+# Copyright 2020 Gerein
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -279,103 +280,6 @@ LIBRARY_TYPE_MAP = [
 #
 ############################################################
 
-SUBCMD_TO_STRING = {}
-CMD_TO_STRING = {}
-SUBCMD_TO_PARSE_TABLE = {}
-
-_ALLOWED_PARAMETER_FORMATS = {
-    "3{XXX}",  # 24bit
-    "A{code}",
-    "A{name}",
-    "A{commands}",
-    "B{alarm}",
-    "B{class}",
-    "B{control}",
-    "B{count}",
-    "B{dayhour}",
-    "B{delay}",
-    "B{dst}",
-    "B{duration}",
-    "B{endpoint}",
-    "B{extra}",
-    "B{generic}",
-    "B{group}",
-    "B{key}",
-    "B{keys}",
-    "B{level}",
-    "B{user}",
-    "B{library}",
-    "B{min}",
-    "B{minute}",
-    "B{mode}",
-    "B{node}",
-    "B{parameter}",
-    "B{profiles}",
-    "B{protection}",
-    "B{role}",
-    "B{scale}",
-    "B{scene}",
-    "B{schemes}",
-    "B{sec}",
-    "B{seq}",
-    "B{specific}",
-    "B{src}",
-    "B{state}",
-    "B{status}",
-    "B{thermo}",
-    "B{timeout}",
-    "B{type1}",
-    "B{type2}",
-    "B{type}",
-    "B{user}",
-    "B{version}",
-    "C{date}",
-    "E{extensions}",
-    "G{groups}",
-    "F{bytes}",
-    "K{key}",
-    "L{code}",
-    "L{command}",
-    "L{data}",
-    "L{key}",
-    "L{nodes}",
-    "L{nonce}",
-    "L{classes}",
-    "L{extra}",
-    "M{value}",
-    "N{name}",
-    "O{nonce}",
-    "R{bits}",
-    "T{bits}",
-    "V{value}",
-    "W{firmware}",
-    "W{checksum}",
-    "W{count}",
-    "W{dhm}",
-    "W{icon}",
-    "W{icon2}",
-    "W{id}",
-    "W{manufacturer}",
-    "W{product}",
-    "W{protocol}",
-    "W{type}",
-    "X{value}",
-    # optional, usually at the end of the command for backwards compatibility
-    "t{targets}",
-    "b{scale}",
-    "b{sensor}",
-    "b{hardware}",
-    "b{count2}",
-}
-
-
-def CheckParseFormat(f):
-    if f == "":
-        return
-    tokens = f.split(",")
-    for param in tokens:
-        assert param in _ALLOWED_PARAMETER_FORMATS, param
-
 SERIALCMD_TO_STRING = {}
 SERIALCMD_TO_CONTROLLERREQUEST_PARSE_TABLE = {}
 SERIALCMD_TO_DEVICERESPONSE_PARSE_TABLE = {}
@@ -392,27 +296,27 @@ def SC(serial_cmd, serial_code, controller_request_format=None, node_response_fo
 
 
 SC("APPLICATION_COMMAND_HANDLER",             0x04, None, None, "B{rxStatus},B{node},SZCMD{command},b{rxRSSIVal},b{securityKey}")
-SC("APPLICATION_SLAVE_COMMAND_HANDLER",       0xA1, None)
-SC("MEMORY_GET_BYTE",                         0x21, None)
+SC("APPLICATION_SLAVE_COMMAND_HANDLER",       0xA1, None)   # TODO
+SC("MEMORY_GET_BYTE",                         0x21, None)   # TODO
 
-SC("PROMISCUOUS_APPLICATION_COMMAND_HANDLER", 0xD1, None)
+SC("PROMISCUOUS_APPLICATION_COMMAND_HANDLER", 0xD1, None)   # TODO
 
 SC("SERIAL_API_APPL_NODE_INFORMATION",        0x03, "B{deviceoptions},B{generic},B{specific},A{nodeparm}")
 SC("SERIAL_API_GET_INIT_DATA",                0x02, "", "B{version},B{capabilities},A{nodemask},B{chipType},B{chipVersion}")
 SC("SERIAL_API_GET_CAPABILITIES",             0x07, "", "W{version},W{manufacturer},W{productType},W{productId},L{functionBitmask}")
 SC("SERIAL_API_SET_TIMEOUTS",                 0x06, "B{rxacktimeout},B{rxbytetimeout}", "B{prevrxacktimeout},B{prevrxbytetimeout}")
-SC("SERIAL_API_SLAVE_NODE_INFO",              0xA0, None)
+SC("SERIAL_API_SLAVE_NODE_INFO",              0xA0, None)   # TODO
 SC("SERIAL_API_SOFT_RESET",                   0x08, "")
 
 SC("ZW_ADD_NODE_TO_NETWORK",                  0x4a, "B{mode}", None, "B{callback},B{status},B{node},L{rest}")
 SC("ZW_APPLICATION_UPDATE",                   0x49, None, None, "B{status},L{data}")
-SC("ZW_ASSIGN_RETURN_ROUTE",                  0x46, None)
-SC("ZW_ASSIGN_SUC_RETURN_ROUTE",              0x51, None)
+SC("ZW_ASSIGN_RETURN_ROUTE",                  0x46, None)   # TODO
+SC("ZW_ASSIGN_SUC_RETURN_ROUTE",              0x51, None)   # TODO
 SC("ZW_CONTROLLER_CHANGE",                    0x4d, "B{mode}", None, "B{callback},B{status},B{node},A{rest}")
-SC("ZW_CREATE_NEW_PRIMARY",                   0x4c, None)
-SC("ZW_DELETE_RETURN_ROUTE",                  0x47, None)
-SC("ZW_DELETE_SUC_RETURN_ROUTE",              0x55, None)
-SC("ZW_ENABLE_SUC",                           0x52, None)
+SC("ZW_CREATE_NEW_PRIMARY",                   0x4c, None)   # TODO
+SC("ZW_DELETE_RETURN_ROUTE",                  0x47, None)   # TODO
+SC("ZW_DELETE_SUC_RETURN_ROUTE",              0x55, None)   # TODO
+SC("ZW_ENABLE_SUC",                           0x52, None)   # TODO
 
 SC("ZW_GET_CONTROLLER_CAPABILITIES",          0x05, "", "B{retval}")
 SC("ZW_GET_NODE_PROTOCOL_INFO",               0x41, "B{node}", "B{capability},B{security},B{_reserved},B{basic},B{generic},B{specific}")
@@ -420,48 +324,51 @@ SC("ZW_GET_RANDOM",                           0x1c, "B{noRandomBytes}", "B{rando
 SC("ZW_GET_ROUTING_INFO",                     0x80, "B{node},B{removebad},B{removenonreps},B{_mustbezero}", "NDMASK{nodelist}")
 SC("ZW_GET_SUC_NODE_ID",                      0x56, "", "B{sucnodeid}")
 SC("ZW_GET_VERSION",                          0x15, "", "L{rest}")
-SC("ZW_GET_VIRTUAL_NODES",                    0xA5, None)
+SC("ZW_GET_VIRTUAL_NODES",                    0xA5, None)   # TODO
 
 SC("ZW_IS_FAILED_NODE_ID",                    0x62, "B{node}", "B{retval}")
-SC("ZW_IS_VIRTUAL_NODE",                      0xA6, None)
+SC("ZW_IS_VIRTUAL_NODE",                      0xA6, None)   # TODO
 
 SC("ZW_MEMORY_GET_ID",                        0x20, "", "W{homeidMSW},W{homeidLSW},B{node}")
-SC("ZW_NEW_CONTROLLER",                       0x43, None)
+SC("ZW_NEW_CONTROLLER",                       0x43, None)   # TODO
 SC("ZW_READ_MEMORY",                          0x23, "W{offset},B{length}", "R{buffer}")
-SC("ZW_REMOVE_FAILED_NODE_ID",                0x61, None)
+SC("ZW_REMOVE_FAILED_NODE_ID",                0x61, None)   # TODO
 SC("ZW_REMOVE_NODE_FROM_NETWORK",             0x4b, "B{mode}", None, "B{callback},B{status},B{node},L{rest}")
-SC("ZW_REPLACE_FAILED_NODE",                  0x63, None)
-SC("ZW_REPLICATION_COMMAND_COMPLETE",         0x44, None)
-SC("ZW_REPLICATION_SEND_DATA",                0x45, None)
+SC("ZW_REPLACE_FAILED_NODE",                  0x63, None)   # TODO
+SC("ZW_REPLICATION_COMMAND_COMPLETE",         0x44, None)   # TODO
+SC("ZW_REPLICATION_SEND_DATA",                0x45, None)   # TODO
 
-SC("ZW_REQUEST_NETWORK_UPDATE",               0x53, None)
+SC("ZW_REQUEST_NETWORK_UPDATE",               0x53, None)   # TODO
 SC("ZW_REQUEST_NODE_INFO",                    0x60, "B{node}", "B{retval}")
 SC("ZW_REQUEST_NODE_NEIGHBOR_UPDATE",         0x48, "B{node}", None, "B{callback},B{status}")
-SC("ZW_REQUEST_NODE_NEIGHBOR_UPDATE_OPTIONS", 0x5a, None)
-SC("ZW_R_F_POWER_LEVEL_SET",                  0x17, None)
+SC("ZW_REQUEST_NODE_NEIGHBOR_UPDATE_OPTIONS", 0x5a, None)   # TODO
+SC("ZW_R_F_POWER_LEVEL_SET",                  0x17, None)   # TODO
 
 SC("ZW_SEND_DATA",                            0x13, "B{node},SZCMD{command},B{txOptions},B{callback}", "B{retval}", "B{callback},B{txstatus}")
 SC("ZW_SEND_NODE_INFORMATION",                0x12, "B{node},B{txOptions}", "B{retVal}", "B{callback},B{txStatus}")
-SC("ZW_SEND_SLAVE_DATA",                      0xA3, None)
-SC("ZW_SEND_SLAVE_NODE_INFO",                 0xA2, None)
+SC("ZW_SEND_SLAVE_DATA",                      0xA3, None)   # TODO
+SC("ZW_SEND_SLAVE_NODE_INFO",                 0xA2, None)   # TODO
 
 SC("ZW_SET_DEFAULT",                          0x42, "", None, "B{callback}")
 SC("ZW_SET_LEARN_MODE",                       0x50, "B{mode}", "B{true}", "B{callback},B{status},B{node},A{nodeparm}")
-SC("ZW_SET_LEARN_NODE_STATE",                 0x40, None)
+SC("ZW_SET_LEARN_NODE_STATE",                 0x40, None)   # TODO
 SC("ZW_SET_PROMISCUOUS_MODE",                 0xd0, "B{state}")
-SC("ZW_SET_SLAVE_LEARN_MODE",                 0xA4, None)
-SC("ZW_SET_SUC_NODE_ID",                      0x54, None)
+SC("ZW_SET_SLAVE_LEARN_MODE",                 0xA4, None)   # TODO
+SC("ZW_SET_SUC_NODE_ID",                      0x54, None)   # TODO
 
-SC("ZW_SET_R_F_RECEIVE_MODE",                 0x10, None)
-SC("ZW_SEND_DATA_MULTI",                      0x14, None)
-SC("ZW_SEND_DATA_ABORT",                      0x16, None)
-SC("ZW_SEND_DATA_META",                       0x18, None)
-SC("ZW_MEMORY_PUT_BYTE",                      0x22, None)
-SC("ZW_MEMORY_PUT_BUFFER",                    0x24, None)
-SC("ZW_SEND_SUC_ID",                          0x57, None)
-SC("FUNC_ID_LOCK_ROUTE_RESPONSE",             0x90, None)
+SC("ZW_SET_R_F_RECEIVE_MODE",                 0x10, None)   # TODO
+SC("ZW_SEND_DATA_MULTI",                      0x14, None)   # TODO
+SC("ZW_SEND_DATA_ABORT",                      0x16, None)   # TODO
+SC("ZW_SEND_DATA_META",                       0x18, None)   # TODO
+SC("ZW_MEMORY_PUT_BYTE",                      0x22, None)   # TODO
+SC("ZW_MEMORY_PUT_BUFFER",                    0x24, None)   # TODO
+SC("ZW_SEND_SUC_ID",                          0x57, None)   # TODO
+SC("FUNC_ID_LOCK_ROUTE_RESPONSE",             0x90, None)   # TODO
 
 
+SUBCMD_TO_STRING = {}
+CMD_TO_STRING = {}
+SUBCMD_TO_PARSE_TABLE = {}
 
 def C(base, cmd, **subs):
     """Register a Command Class"""
@@ -809,7 +716,6 @@ C("Security2", 0x9f,
   TransferEnd=(0x0c, "B{mode}"),
   CommandsSupportedGet=(0x0d, ""),
   CommandsSupportedReport=(0x0e, "L{classes}"),
-
   )
 
 C("ManufacturerProprietary", 0x91)
